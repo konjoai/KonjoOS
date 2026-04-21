@@ -1,4 +1,4 @@
-# Konjo KORE — Master Plan
+# Kyro — Master Plan
 
 > **ቆንጆ** — Beautiful. **根性** — Fighting spirit. **康宙** — Health of the universe. **खोजो** — Search and discover.
 > *Make it konjo — build, ship, rest, repeat.*
