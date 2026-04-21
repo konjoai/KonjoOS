@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Generator as IterGenerator
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/query", tags=["query"])
 
 
 @router.post("", response_model=QueryResponse)
-def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
+async def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
     """Run the full RAG pipeline: route → (HyDE) → hybrid_search → (CRAG) → rerank → generate → (Self-RAG).
 
     Pipeline steps (each wrapped in timed() when telemetry is enabled):
@@ -74,7 +75,7 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
 
     if req.use_hyde or settings.enable_hyde:
         with timed(tel, "hyde"):
-            _, hypothesis = hyde_encode(req.question)
+            _, hypothesis = await asyncio.to_thread(hyde_encode, req.question)
         effective_question = hypothesis or req.question
         logger.debug("HyDE hypothesis: %r", effective_question[:120])
     # ── Step 2b: Early embed + cache lookup (RETRIEVAL only) ─────────────────
@@ -85,7 +86,9 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
         if _cache_chk is not None:
             from konjoai.embed.encoder import get_encoder
             with timed(tel, "embed"):
-                q_vec = get_encoder().encode_query(effective_question)
+                q_vec = await asyncio.to_thread(
+                    get_encoder().encode_query, effective_question
+                )
             _cached = _cache_chk.lookup(effective_question, q_vec)
             if _cached is not None:
                 logger.debug("semantic cache hit — skipping Qdrant")
@@ -98,12 +101,12 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
         with timed(tel, "decompose"):
             sub_questions = decompose_query(effective_question)
         logger.debug("AGGREGATION fan-out: %d sub-questions", len(sub_questions))
+        raw = await asyncio.gather(
+            *[asyncio.to_thread(hybrid_search, sq) for sq in sub_questions]
+        )
         all_results: list[HybridResult] = []
-        for i, sq in enumerate(sub_questions):
-            with timed(tel, "hybrid_search",
-                       sub=i, top_k_dense=settings.top_k_dense,
-                       top_k_sparse=settings.top_k_sparse):
-                all_results.extend(hybrid_search(sq))
+        for batch in raw:
+            all_results.extend(batch)
         seen: dict[str, HybridResult] = {}
         for r in all_results:
             if r.content not in seen or r.rrf_score > seen[r.content].rrf_score:
@@ -124,13 +127,17 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
                     top_k=settings.top_k_dense,
                 )
             else:
-                hybrid_results = hybrid_search(effective_question, q_vec=q_vec)
+                hybrid_results = await asyncio.to_thread(
+                    hybrid_search, effective_question, q_vec=q_vec
+                )
 
     # ── Step 3b: CRAG — Corrective RAG relevance grading ─────────────────────
     if settings.enable_crag and hybrid_results:
         from konjoai.retrieve.crag import get_crag_pipeline
         with timed(tel, "crag", n_docs=len(hybrid_results)):
-            crag_result = get_crag_pipeline().run(req.question, hybrid_results)
+            crag_result = await asyncio.to_thread(
+                get_crag_pipeline().run, req.question, hybrid_results
+            )
         crag_confidence = crag_result.overall_confidence
         crag_fallback = crag_result.needs_fallback
         # Use the CRAG-filtered document list for downstream steps
@@ -146,15 +153,17 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
 
     # ── Step 4: Cross-encoder reranking ──────────────────────────────────────
     with timed(tel, "rerank", top_k=req.top_k):
-        reranked = rerank(req.question, hybrid_results, top_k=req.top_k)
+        reranked = await asyncio.to_thread(
+            rerank, req.question, hybrid_results, top_k=req.top_k
+        )
 
     # ── Step 4.5: MaxSim late-interaction re-scoring (ColBERT-style) ─────────
     if settings.use_colbert:
         with timed(tel, "colbert_maxsim", top_k=req.top_k):
             from konjoai.embed.encoder import get_encoder
             _enc = get_encoder()
-            query_emb = _enc.encode(req.question)
-            reranked = rerank_with_maxsim(query_emb, reranked)
+            query_emb = await asyncio.to_thread(_enc.encode, req.question)
+            reranked = await asyncio.to_thread(rerank_with_maxsim, query_emb, reranked)
             reranked = reranked[: req.top_k]
 
     # ── Step 5: Generation ───────────────────────────────────────────────────
@@ -162,7 +171,9 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
     generator = get_generator()
 
     with timed(tel, "generate", model=settings.openai_model):
-        result = generator.generate(question=req.question, context=context)
+        result = await asyncio.to_thread(
+            generator.generate, question=req.question, context=context
+        )
 
     answer = result.answer
 
@@ -172,7 +183,8 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
         with timed(tel, "self_rag"):
             def _gen() -> str:
                 return generator.generate(question=req.question, context=context).answer
-            sr = get_self_rag_pipeline().run(
+            sr = await asyncio.to_thread(
+                get_self_rag_pipeline().run,
                 question=req.question,
                 documents=reranked,
                 generate_fn=_gen,
@@ -213,12 +225,14 @@ def query(req: QueryRequest) -> QueryResponse:  # noqa: C901
         from konjoai.cache import get_semantic_cache
         _cache_store = get_semantic_cache()
         if _cache_store is not None:
-            _cache_store.store(effective_question, q_vec, response)
+            await asyncio.to_thread(
+                _cache_store.store, effective_question, q_vec, response
+            )
     return response
 
 
 @router.post("/stream")
-def query_stream(req: QueryRequest) -> StreamingResponse:  # noqa: C901
+async def query_stream(req: QueryRequest) -> StreamingResponse:  # noqa: C901
     """SSE streaming version of the RAG pipeline.
 
     Emits Server-Sent Events in the format::
@@ -263,7 +277,7 @@ def query_stream(req: QueryRequest) -> StreamingResponse:  # noqa: C901
     # ── HyDE (optional) ───────────────────────────────────────────────────
     effective_question = req.question
     if req.use_hyde or settings.enable_hyde:
-        _, hypothesis = hyde_encode(req.question)
+        _, hypothesis = await asyncio.to_thread(hyde_encode, req.question)
         effective_question = hypothesis or req.question
 
     # ── Hybrid retrieval + rerank ─────────────────────────────────────────
@@ -273,15 +287,15 @@ def query_stream(req: QueryRequest) -> StreamingResponse:  # noqa: C901
             effective_question, top_k=settings.top_k_dense
         )
     else:
-        hybrid_results = hybrid_search(effective_question)
-    reranked = rerank(req.question, hybrid_results, top_k=req.top_k)
+        hybrid_results = await asyncio.to_thread(hybrid_search, effective_question)
+    reranked = await asyncio.to_thread(rerank, req.question, hybrid_results, top_k=req.top_k)
 
     # ── MaxSim late-interaction re-scoring ────────────────────────────────
     if settings.use_colbert:
         from konjoai.embed.encoder import get_encoder
         from konjoai.retrieve.late_interaction import rerank_with_maxsim
-        _query_emb = get_encoder().encode(req.question)
-        reranked = rerank_with_maxsim(_query_emb, reranked)[: req.top_k]
+        _query_emb = await asyncio.to_thread(get_encoder().encode, req.question)
+        reranked = (await asyncio.to_thread(rerank_with_maxsim, _query_emb, reranked))[: req.top_k]
 
     context = "\n\n---\n\n".join(r.content for r in reranked)
 

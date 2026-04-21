@@ -170,3 +170,54 @@ def get_store() -> QdrantStore:
             dim=get_encoder().dim,
         )
     return _store
+
+
+class AsyncQdrantStore:
+    """Async Qdrant wrapper with httpx connection pooling (Sprint 8)."""
+
+    def __init__(self) -> None:
+        try:
+            from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
+            import httpx  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError("qdrant-client>=1.7 and httpx are required") from exc
+
+        from konjoai.config import get_settings  # noqa: PLC0415
+
+        settings = get_settings()
+
+        self._client = AsyncQdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+        self._collection = settings.qdrant_collection
+
+    async def search(self, query_vector: np.ndarray, top_k: int = 20) -> list[SearchResult]:
+        vec = query_vector.flatten().tolist()
+        result = await self._client.query_points(
+            collection_name=self._collection,
+            query=vec,
+            limit=top_k,
+            with_payload=True,
+        )
+        return [
+            SearchResult(
+                id=str(h.id),
+                score=float(h.score),
+                content=h.payload.get("content", ""),
+                source=h.payload.get("source", ""),
+                metadata={k: v for k, v in h.payload.items() if k not in {"content", "source"}},
+            )
+            for h in result.points
+        ]
+
+
+_async_store: "AsyncQdrantStore | None" = None
+
+
+def get_async_store() -> AsyncQdrantStore:
+    """Return the module-level singleton async store (lazy init)."""
+    global _async_store
+    if _async_store is None:
+        _async_store = AsyncQdrantStore()
+    return _async_store

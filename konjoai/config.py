@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     enable_self_rag: bool = False                    # off by default
     self_rag_max_iterations: int = 2                 # max generate → critique cycles
 
+    # ── Async Pipeline (Sprint 8) ─────────────────────────────────────────────
+    async_enabled: bool = True               # on by default for async pipeline
+    request_timeout_seconds: float = 30.0   # asyncio.timeout ceiling per request
+    qdrant_max_connections: int = 10         # httpx connection pool limit for AsyncQdrantClient
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
