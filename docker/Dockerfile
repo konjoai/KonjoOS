@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.11-slim
 
 # Non-root user
-RUN groupadd -r ragos && useradd -r -g ragos ragos
+RUN groupadd -r konjoai && useradd -r -g konjoai konjoai
 
 WORKDIR /app
 
@@ -23,13 +23,13 @@ WORKDIR /app
 COPY --from=builder /install /usr/local
 
 # Copy source
-COPY --chown=ragos:ragos ragos/ ./ragos/
-COPY --chown=ragos:ragos pyproject.toml .
+COPY --chown=konjoai:konjoai konjoai/ ./konjoai/
+COPY --chown=konjoai:konjoai pyproject.toml .
 
 # Install the package itself (editable in dev; proper install here)
 RUN pip install --no-cache-dir --no-deps .
 
-USER ragos
+USER konjoai
 
 EXPOSE 8000
 
@@ -38,4 +38,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" \
     || exit 1
 
-CMD ["ragos", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["konjoai", "serve", "--host", "0.0.0.0", "--port", "8000"]
