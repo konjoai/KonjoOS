@@ -1,4 +1,4 @@
-# Konjo KORE — Strategic Roadmap
+# Kyro — Strategic Roadmap
 
 > **ቆንጆ** — Beautiful. **根性** — Fighting spirit. **康宙** — Health of the universe. **खोजो** — Search and discover.
 > *Make it konjo — build, ship, rest, repeat.*
@@ -9,9 +9,9 @@
 
 ---
 
-## What Is Konjo KORE?
+## What Is Kyro?
 
-Konjo KORE is **the pipeline connector** — the data plane that binds together Vectro
+Kyro is **the pipeline connector** — the data plane that binds together Vectro
 (embedding compression), Squish (local LLM inference), Qdrant (vector store), and any
 future component into a single, lightning-fast, observable RAG kernel.
 
@@ -19,7 +19,7 @@ future component into a single, lightning-fast, observable RAG kernel.
 
 Unlike LangChain or LlamaIndex, KORE is:
 
-| Property | LangChain / LlamaIndex | Konjo KORE |
+| Property | LangChain / LlamaIndex | Kyro |
 |---|---|---|
 | Design philosophy | Maximize abstraction | Minimize indirection |
 | Transitive deps | 200+ | < 20 |
@@ -326,7 +326,7 @@ Honeycomb) and Prometheus metrics (for Grafana dashboards).
 **Goal:** Make KORE the easiest RAG backend to adopt. `pip install`, `docker pull`, done.
 
 **Implementation:**
-- Python SDK: `konjo-core-sdk` package on PyPI
+- Python SDK: `kyro-sdk` package on PyPI
   ```python
   from konjo_sdk import KonjoClient
   client = KonjoClient("http://localhost:8000", api_key="...")
@@ -340,12 +340,12 @@ Honeycomb) and Prometheus metrics (for Grafana dashboards).
   const client = new KonjoClient({ baseUrl: "...", apiKey: "..." });
   const stream = client.query({ question: "...", stream: true });
   ```
-- Helm chart for Kubernetes: `helm/konjo-core/`
-- Docker Hub: `konjoai/konjo-core:latest` auto-published on release
+- Helm chart for Kubernetes: `helm/kyro/`
+- Docker Hub: `konjoai/kyro:latest` auto-published on release
 - GitHub Actions: release workflow → PyPI + npm + Docker Hub + Helm registry
 
 **Gates:**
-- `pip install konjo-core-sdk && python -c "from konjo_sdk import KonjoClient; print('ok')"` works
+- `pip install kyro-sdk && python -c "from konjo_sdk import KonjoClient; print('ok')"` works
 - `npm install @konjo/core-sdk && node -e "require('@konjo/core-sdk')"` works
 - Helm chart deploys cleanly on k3s (CI test)
 - `docker compose up` → full stack running in < 60 seconds
@@ -443,7 +443,7 @@ These are non-negotiable architectural properties. Any commit that violates one 
 | Namespace isolation | 100% verified | S9 |
 | Auth: invalid key → 401 | Always | S11 |
 | Docker compose → running | < 60 seconds | S12 |
-| PyPI install | `pip install konjo-core-sdk` works | S12 |
+| PyPI install | `pip install kyro-sdk` works | S12 |
 
 ---
 
