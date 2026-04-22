@@ -1,87 +1,58 @@
-"""Self-RAG — reflective retrieval-augmented generation.
+"""Self-RAG orchestrator for reflective generation.
 
-What is Self-RAG?
------------------
-Standard RAG always retrieves documents, regardless of whether retrieval
-is actually useful.  For conversational or commonsense queries this adds
-latency and often hurts answer quality by injecting irrelevant context.
+Sprint 12 contract (v0.7.0):
+1. Generate a partial answer.
+2. Critique with reflection scores: ISREL / ISSUP / ISUSE.
+3. If ISSUP < 0.5, perform retrieval with a refined query.
+4. If ISREL > 0.8 and ISSUP is sufficient, continue without retrieval.
+5. Stop after a bounded number of iterations.
 
-Self-RAG (Asai et al. 2023, arXiv:2310.11511) inserts lightweight
-**reflection tokens** that let the pipeline decide:
-
-1. **[Retrieve]** — is retrieval needed for this query?
-2. **[IsRel]** — is a given document relevant to the query?
-3. **[IsSup]** — is the generated segment supported by the document?
-4. **[IsUse]** — is the final answer useful to the user?
-
-Each token is a discrete decision, not a free-text generation.  Together
-they form a critique loop that can:
-* Skip retrieval for chat / commonsense queries.
-* Discard low-support generations and retry.
-* Select the best candidate when multiple candidates exist.
-
-Implementation
---------------
-Full Self-RAG as described in the paper requires a fine-tuned LLM that
-emits reflection tokens inline.  This implementation provides the
-**pipeline-level equivalent** using the existing lightweight tools:
-
-* ``[Retrieve]`` decision — the existing :class:`konjoai.retrieve.router.QueryIntent`
-  classifier (CHAT = skip retrieval).
-* ``[IsRel]`` scoring — :class:`konjoai.retrieve.crag.DocumentGrader` cross-encoder score.
-* ``[IsSup]`` scoring — a sentence-level NLI pass using the same cross-encoder.
-  The (document_chunk, generated_answer) pair is scored; a negative logit
-  means the answer is **not** grounded in that document.
-* ``[IsUse]`` scoring — a keyword-overlap proxy (Jaccard similarity between
-  the question tokens and the answer tokens).  Cost: O(tokens), zero API.
-
-When ``enable_self_rag=True``, the pipeline:
-1. Generates an answer normally.
-2. Scores ``[IsSup]`` against retrieved documents.
-3. If support is below threshold, re-generates up to ``self_rag_max_iterations`` times.
-4. Returns the best-supported answer with critique metadata attached.
-
-K1: Every method raises on bad input.
-K2: Reflection scores added to ``QueryResponse.telemetry`` when enabled.
-K3: Graceful degradation — if cross-encoder unavailable, ``[IsSup]`` falls
-    back to keyword overlap and logs a warning.
-K5: Zero new hard deps.
+This module keeps a pragmatic runtime design that does not require
+fine-tuning the base model. It combines:
+- existing cross-encoder support scoring,
+- lightweight usefulness overlap heuristics,
+- optional LLM rubric scoring callback for ISREL/ISSUP/ISUSE.
 """
 from __future__ import annotations
 
+import inspect
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
+from typing import Any, Callable, Sequence
 
 from konjoai.retrieve.router import QueryIntent, classify_intent
 
 logger = logging.getLogger(__name__)
 
 
-# ── Reflection token enumerations ─────────────────────────────────────────────
-
 class RetrieveDecision(str, Enum):
-    """[Retrieve] — should this query trigger document retrieval?"""
+    """[Retrieve] — should this query trigger retrieval?"""
+
     YES = "yes"
     NO = "no"
 
 
 class RelevanceToken(str, Enum):
-    """[IsRel] — is this document relevant to the query?"""
+    """[IsRel] — document relevance token."""
+
     RELEVANT = "relevant"
     IRRELEVANT = "irrelevant"
 
 
 class SupportToken(str, Enum):
-    """[IsSup] — is the generated answer supported by the document?"""
+    """[IsSup] — support token."""
+
     FULLY_SUPPORTED = "fully_supported"
     PARTIALLY_SUPPORTED = "partially_supported"
     NOT_SUPPORTED = "not_supported"
 
 
 class UsefulnessToken(IntEnum):
-    """[IsUse] — is the answer useful to the user?  Score 1 (low) – 5 (high)."""
+    """[IsUse] token with the 1-5 Self-RAG scale."""
+
     VERY_HIGH = 5
     HIGH = 4
     MEDIUM = 3
@@ -89,41 +60,44 @@ class UsefulnessToken(IntEnum):
     VERY_LOW = 1
 
 
-# ── Critique dataclasses ──────────────────────────────────────────────────────
-
 @dataclass
 class DocumentCritique:
-    """[IsRel] + [IsSup] for one (answer, document) pair."""
+    """Per-document critique output."""
 
     content: str
     source: str
     relevance: RelevanceToken
     support: SupportToken
-    support_score: float    # raw cross-encoder or Jaccard score
+    support_score: float
+
+
+@dataclass
+class SelfRAGTokens:
+    """Continuous reflection signals in [0, 1]."""
+
+    isrel: float
+    issup: float
+    isuse: float
 
 
 @dataclass
 class SelfRAGResult:
-    """Output of the Self-RAG reflection pass."""
+    """Self-RAG orchestration result."""
 
     answer: str
     retrieve_decision: RetrieveDecision
     document_critiques: list[DocumentCritique]
     usefulness: UsefulnessToken
     usefulness_score: float
-    support_score: float        # mean support score across RELEVANT docs
-    iterations: int             # how many generate → critique cycles were needed
+    support_score: float
+    iterations: int
+    iteration_scores: list[dict[str, float]] = field(default_factory=list)
+    total_tokens: int = 0
     metadata: dict = field(default_factory=dict)
 
 
-# ── Support scorer ────────────────────────────────────────────────────────────
-
 class SupportScorer:
-    """Score whether a generated *answer* is supported by a *document*.
-
-    Primary: cross-encoder (passage, answer) scoring.
-    Fallback: Jaccard token overlap when cross-encoder is unavailable.
-    """
+    """Document-answer support scorer with graceful fallback."""
 
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> None:
         self._model_name = model_name
@@ -135,12 +109,13 @@ class SupportScorer:
             return
         try:
             from sentence_transformers import CrossEncoder as CE
+
             self._model = CE(self._model_name)
-            logger.debug("SupportScorer: loaded cross-encoder %s", self._model_name)
-        except ImportError:
+            logger.debug("SupportScorer loaded cross-encoder %s", self._model_name)
+        except Exception as exc:  # pragma: no cover - depends on runtime env
             logger.warning(
-                "SupportScorer: sentence-transformers unavailable; "
-                "falling back to Jaccard token overlap for [IsSup]"
+                "SupportScorer falling back to token-overlap mode (%s)",
+                exc,
             )
             self._use_fallback = True
 
@@ -152,11 +127,19 @@ class SupportScorer:
             return 0.0
         return len(ta & tb) / len(ta | tb)
 
-    def score(self, document: str, answer: str) -> float:
-        """Return a raw support score.  Higher = better support.
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        if x >= 0:
+            z = math.exp(-x)
+            return 1.0 / (1.0 + z)
+        z = math.exp(x)
+        return z / (1.0 + z)
 
-        Cross-encoder: raw logit (unbounded, positive = supported).
-        Jaccard fallback: [0.0, 1.0].
+    def score(self, document: str, answer: str) -> float:
+        """Return raw support score.
+
+        Cross-encoder mode returns logits.
+        Fallback mode returns Jaccard overlap in [0, 1].
         """
         self._load_model()
         if self._use_fallback:
@@ -164,13 +147,14 @@ class SupportScorer:
         scores = self._model.predict([(document, answer)], show_progress_bar=False)
         return float(scores[0])
 
-    def support_token(self, score: float, high: float = 2.0, low: float = -0.5) -> SupportToken:
-        """Discretise a raw *score* into a :class:`SupportToken`.
+    def normalize(self, score: float) -> float:
+        """Normalize score to [0, 1] regardless of scoring backend."""
+        if self._use_fallback:
+            return max(0.0, min(score, 1.0))
+        return self._sigmoid(score)
 
-        When using the Jaccard fallback the thresholds are re-calibrated:
-        ``high=0.20`` (20% token overlap = fully supported),
-        ``low=0.05`` (≤5% = not supported).
-        """
+    def support_token(self, score: float, high: float = 2.0, low: float = -0.5) -> SupportToken:
+        """Map raw score to support token."""
         if self._use_fallback:
             high, low = 0.20, 0.05
         if score >= high:
@@ -180,222 +164,377 @@ class SupportScorer:
         return SupportToken.NOT_SUPPORTED
 
 
-# ── Usefulness scorer ─────────────────────────────────────────────────────────
-
 class UsefulnessScorer:
-    """Score answer usefulness with a keyword-overlap proxy.
+    """Answer usefulness scorer with overlap proxy."""
 
-    [IsUse] in the paper requires a fine-tuned model.  This lightweight
-    proxy asks: "how many question-relevant terms appear in the answer?"
-
-    Formula:
-        overlap = |tokens(question) ∩ tokens(answer)| / |tokens(question)|
-        score = 1 + round(overlap × 4)   → 1–5
-    """
+    _STOPS = {
+        "what",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "is",
+        "are",
+        "was",
+        "were",
+        "the",
+        "a",
+        "an",
+        "of",
+        "in",
+        "on",
+        "for",
+        "to",
+        "and",
+        "or",
+        "but",
+        "i",
+        "you",
+        "it",
+        "this",
+        "that",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "can",
+        "could",
+        "would",
+        "should",
+        "will",
+    }
 
     def score(self, question: str, answer: str) -> tuple[UsefulnessToken, float]:
-        """Return ``(UsefulnessToken, raw_overlap_score)``."""
+        """Return (token, normalized usefulness score in [0, 1])."""
         if not question.strip() or not answer.strip():
             return UsefulnessToken.VERY_LOW, 0.0
 
         q_tokens = set(re.findall(r"\w+", question.lower()))
         a_tokens = set(re.findall(r"\w+", answer.lower()))
 
-        # Remove stop words from the question token set
-        _STOPS = {
-            "what", "who", "where", "when", "why", "how", "is", "are",
-            "was", "were", "the", "a", "an", "of", "in", "on", "for",
-            "to", "and", "or", "but", "i", "you", "it", "this", "that",
-            "do", "does", "did", "has", "have", "had", "can", "could",
-            "would", "should", "will",
-        }
-        content_tokens = q_tokens - _STOPS
+        content_tokens = q_tokens - self._STOPS
         if not content_tokens:
-            content_tokens = q_tokens  # fallback: use all tokens
+            content_tokens = q_tokens
 
         overlap = len(content_tokens & a_tokens) / len(content_tokens)
-        # Map [0, 1] → UsefulnessToken 1–5
         raw = min(int(overlap * 4) + 1, 5)
-        token = UsefulnessToken(raw)
-        return token, overlap
+        return UsefulnessToken(raw), overlap
 
-
-# ── Retrieve decision ─────────────────────────────────────────────────────────
 
 def decide_retrieve(question: str) -> RetrieveDecision:
-    """[Retrieve] — lightweight heuristic for retrieval necessity.
-
-    Delegates to :func:`konjoai.retrieve.router.classify_intent`:
-    * CHAT intent → ``NO`` (retrieval not needed)
-    * RETRIEVAL or AGGREGATION intent → ``YES``
-
-    This avoids a second LLM call for the retrieval decision.
-    """
+    """Use router intent as [Retrieve] proxy decision."""
     try:
-        intent = classify_intent(question)
-        if intent == QueryIntent.CHAT:
+        if classify_intent(question) == QueryIntent.CHAT:
             return RetrieveDecision.NO
-    except Exception as exc:
-        logger.warning("decide_retrieve: intent classifier failed (%s); defaulting to YES", exc)
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("decide_retrieve failed (%s); defaulting to YES", exc)
     return RetrieveDecision.YES
 
 
-# ── Self-RAG Pipeline ─────────────────────────────────────────────────────────
-
-class SelfRAGPipeline:
-    """Execute the Self-RAG reflection loop.
-
-    Usage in the main query route (after generation)::
-
-        if settings.enable_self_rag:
-            self_rag = get_self_rag_pipeline()
-            result = self_rag.run(
-                question=req.question,
-                documents=reranked,
-                generate_fn=lambda: generator.generate(req.question, context).answer,
-                max_iterations=settings.self_rag_max_iterations,
-            )
-            # Use result.answer which is the best-supported generation.
-
-    Args:
-        support_scorer:   :class:`SupportScorer` to use (default: module singleton).
-        usefulness_scorer: :class:`UsefulnessScorer` to use.
-        min_support_score: Raw cross-encoder score threshold above which an
-                           answer is accepted without retry.
-        max_iterations:   Maximum generate→critique cycles (default: 2).
-    """
+class SelfRAGCritic:
+    """Compute reflection scores for one partial answer."""
 
     def __init__(
         self,
         support_scorer: SupportScorer | None = None,
         usefulness_scorer: UsefulnessScorer | None = None,
-        min_support_score: float = 0.0,
-        max_iterations: int = 2,
+        llm_score_fn: Callable[[str], float] | None = None,
     ) -> None:
         self._support = support_scorer or SupportScorer()
         self._usefulness = usefulness_scorer or UsefulnessScorer()
-        self._min_support = min_support_score
+        self._llm_score_fn = llm_score_fn
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return max(0.0, min(value, 1.0))
+
+    @staticmethod
+    def _docs_preview(documents: Sequence[Any], max_docs: int = 3, max_chars: int = 240) -> str:
+        items: list[str] = []
+        for idx, doc in enumerate(documents[:max_docs], start=1):
+            text = str(getattr(doc, "content", ""))[:max_chars]
+            items.append(f"[{idx}] {text}")
+        return "\n".join(items)
+
+    def _score_with_llm(self, prompt: str) -> float | None:
+        if self._llm_score_fn is None:
+            return None
+        try:
+            return self._clamp01(float(self._llm_score_fn(prompt)))
+        except Exception as exc:  # pragma: no cover - defensive path
+            logger.debug("SelfRAGCritic llm_score_fn failed (%s)", exc)
+            return None
+
+    def evaluate(
+        self,
+        question: str,
+        partial_answer: str,
+        documents: Sequence[Any],
+    ) -> tuple[SelfRAGTokens, list[DocumentCritique]]:
+        """Return reflection scores plus per-document critique metadata."""
+        critiques: list[DocumentCritique] = []
+        support_norm_scores: list[float] = []
+
+        for doc in documents:
+            content = str(getattr(doc, "content", ""))
+            source = str(getattr(doc, "source", "unknown"))
+            raw_support = self._support.score(content, partial_answer)
+            norm_support = self._support.normalize(raw_support)
+            support_norm_scores.append(norm_support)
+
+            relevance = (
+                RelevanceToken.RELEVANT if norm_support >= 0.5 else RelevanceToken.IRRELEVANT
+            )
+            support = self._support.support_token(raw_support)
+            critiques.append(
+                DocumentCritique(
+                    content=content,
+                    source=source,
+                    relevance=relevance,
+                    support=support,
+                    support_score=norm_support,
+                )
+            )
+
+        heuristic_isrel = max(support_norm_scores) if support_norm_scores else 0.0
+        heuristic_issup = (
+            sum(support_norm_scores) / len(support_norm_scores)
+            if support_norm_scores
+            else 0.0
+        )
+
+        _, usefulness_overlap = self._usefulness.score(question, partial_answer)
+        heuristic_isuse = usefulness_overlap
+
+        docs_preview = self._docs_preview(documents)
+        llm_isrel = self._score_with_llm(
+            "Rate retrieval relevance in [0,1]. Return only a float.\n"
+            f"Question: {question}\n"
+            f"Partial answer: {partial_answer}\n"
+            f"Retrieved context:\n{docs_preview}\n"
+        )
+        llm_issup = self._score_with_llm(
+            "Rate factual support of the partial answer by context in [0,1]. Return only a float.\n"
+            f"Question: {question}\n"
+            f"Partial answer: {partial_answer}\n"
+            f"Retrieved context:\n{docs_preview}\n"
+        )
+        llm_isuse = self._score_with_llm(
+            "Rate usefulness of the partial answer for the question in [0,1]. Return only a float.\n"
+            f"Question: {question}\n"
+            f"Partial answer: {partial_answer}\n"
+        )
+
+        tokens = SelfRAGTokens(
+            isrel=heuristic_isrel if llm_isrel is None else llm_isrel,
+            issup=heuristic_issup if llm_issup is None else llm_issup,
+            isuse=heuristic_isuse if llm_isuse is None else llm_isuse,
+        )
+        return tokens, critiques
+
+
+class SelfRAGOrchestrator:
+    """Iterative reflective generation with optional retrieval refinement."""
+
+    def __init__(
+        self,
+        critic: SelfRAGCritic | None = None,
+        support_scorer: SupportScorer | None = None,
+        usefulness_scorer: UsefulnessScorer | None = None,
+        llm_score_fn: Callable[[str], float] | None = None,
+        max_iterations: int = 3,
+        issup_threshold: float = 0.5,
+        isrel_no_retrieve_threshold: float = 0.8,
+        max_partial_tokens: int = 100,
+    ) -> None:
+        self._critic = critic or SelfRAGCritic(
+            support_scorer=support_scorer,
+            usefulness_scorer=usefulness_scorer,
+            llm_score_fn=llm_score_fn,
+        )
+        # Compatibility aliases kept for older tests/importers.
+        self._support = self._critic._support
+        self._usefulness = self._critic._usefulness
         self._max_iterations = max(1, max_iterations)
+        self._issup_threshold = issup_threshold
+        self._isrel_no_retrieve_threshold = isrel_no_retrieve_threshold
+        self._max_partial_tokens = max_partial_tokens
+
+    @staticmethod
+    def _token_count(text: str) -> int:
+        return len(re.findall(r"\S+", text))
+
+    def _partial_answer(self, full_answer: str) -> str:
+        tokens = full_answer.split()
+        return " ".join(tokens[: self._max_partial_tokens])
+
+    @staticmethod
+    def _map_usefulness(score: float) -> UsefulnessToken:
+        if score >= 0.875:
+            return UsefulnessToken.VERY_HIGH
+        if score >= 0.625:
+            return UsefulnessToken.HIGH
+        if score >= 0.375:
+            return UsefulnessToken.MEDIUM
+        if score >= 0.125:
+            return UsefulnessToken.LOW
+        return UsefulnessToken.VERY_LOW
+
+    @staticmethod
+    def _refined_query(question: str, partial_answer: str) -> str:
+        focus = partial_answer.strip()
+        if "." in focus:
+            sentences = [s.strip() for s in focus.split(".") if s.strip()]
+            if sentences:
+                focus = max(sentences, key=len)
+        return (
+            f"{question}\n\n"
+            f"Refine retrieval using this draft answer clue: {focus[:300]}"
+        )
+
+    @staticmethod
+    def _call_generate(generate_fn: Callable[..., str], documents: Sequence[Any]) -> str:
+        try:
+            sig = inspect.signature(generate_fn)
+            if len(sig.parameters) >= 1:
+                return str(generate_fn(documents))
+        except (TypeError, ValueError):  # pragma: no cover - builtin/partial callables
+            pass
+        return str(generate_fn())
 
     def run(
         self,
         question: str,
-        documents: list,
-        generate_fn: "callable[[], str]",
+        documents: Sequence[Any],
+        generate_fn: Callable[..., str],
+        retrieve_fn: Callable[[str], Sequence[Any]] | None = None,
         max_iterations: int | None = None,
     ) -> SelfRAGResult:
-        """Execute the Self-RAG critique loop.
+        """Run iterative Self-RAG critique/generation loop.
 
         Args:
-            question:       The user question.
-            documents:      Reranked documents (objects with ``.content``,
-                            ``.source``, ``.metadata``).
-            generate_fn:    Zero-argument callable that returns a candidate
-                            answer string.  Called once per iteration.
-            max_iterations: Override the instance default if provided.
-
-        Returns:
-            :class:`SelfRAGResult` with the best answer and all critique data.
-
-        Raises:
-            ValueError: If *question* is empty or *documents* is empty and
-                        the retrieve decision is YES.
+            question: User question.
+            documents: Initial retrieved docs.
+            generate_fn: Callable returning answer text. Accepts optional docs arg.
+            retrieve_fn: Optional callable for refined retrieval.
+            max_iterations: Optional override.
         """
         if not question.strip():
             raise ValueError("question must be non-empty")
 
+        retrieve_decision = decide_retrieve(question)
+        docs = list(documents)
         n_iter = max_iterations if max_iterations is not None else self._max_iterations
-        retrieve_dec = decide_retrieve(question)
+        n_iter = max(1, n_iter)
 
         best_answer = ""
-        best_support = -999.0
+        best_tokens = SelfRAGTokens(isrel=0.0, issup=0.0, isuse=0.0)
         best_critiques: list[DocumentCritique] = []
-        best_usefulness_token = UsefulnessToken.VERY_LOW
-        best_usefulness_score = 0.0
-        iterations = 0
+        iteration_scores: list[dict[str, float]] = []
+        total_tokens = 0
 
-        for i in range(n_iter):
-            iterations = i + 1
-            candidate = generate_fn()
+        for idx in range(n_iter):
+            candidate = self._call_generate(generate_fn, docs)
+            total_tokens += self._token_count(candidate)
+            partial = self._partial_answer(candidate)
 
-            # Score [IsSup] for each document
-            critiques: list[DocumentCritique] = []
-            support_scores: list[float] = []
-
-            for doc in documents:
-                raw_sup = self._support.score(doc.content, candidate)
-                sup_token = self._support.support_token(raw_sup)
-
-                # [IsRel] via support score direction
-                if raw_sup > self._min_support:
-                    rel_token = RelevanceToken.RELEVANT
-                else:
-                    rel_token = RelevanceToken.IRRELEVANT
-
-                critiques.append(
-                    DocumentCritique(
-                        content=doc.content,
-                        source=getattr(doc, "source", "unknown"),
-                        relevance=rel_token,
-                        support=sup_token,
-                        support_score=raw_sup,
-                    )
-                )
-                if rel_token == RelevanceToken.RELEVANT:
-                    support_scores.append(raw_sup)
-
-            mean_support = (
-                sum(support_scores) / len(support_scores)
-                if support_scores else 0.0
+            tokens, critiques = self._critic.evaluate(
+                question=question,
+                partial_answer=partial,
+                documents=docs,
             )
-            usefulness_token, usefulness_score = self._usefulness.score(question, candidate)
+
+            iteration_scores.append(
+                {
+                    "iteration": float(idx + 1),
+                    "isrel": float(tokens.isrel),
+                    "issup": float(tokens.issup),
+                    "isuse": float(tokens.isuse),
+                }
+            )
+
+            is_better = (
+                tokens.issup > best_tokens.issup
+                or (
+                    abs(tokens.issup - best_tokens.issup) < 1e-9
+                    and tokens.isuse > best_tokens.isuse
+                )
+            )
+            if is_better:
+                best_answer = candidate
+                best_tokens = tokens
+                best_critiques = critiques
 
             logger.debug(
-                "Self-RAG iter=%d mean_support=%.3f usefulness=%s",
-                iterations, mean_support, usefulness_token.name,
+                "Self-RAG iter=%d isrel=%.3f issup=%.3f isuse=%.3f",
+                idx + 1,
+                tokens.isrel,
+                tokens.issup,
+                tokens.isuse,
             )
 
-            # Keep the best-supported candidate
-            if mean_support > best_support:
-                best_answer = candidate
-                best_support = mean_support
-                best_critiques = critiques
-                best_usefulness_token = usefulness_token
-                best_usefulness_score = usefulness_score
-
-            # Early exit: sufficient support achieved
-            if mean_support >= self._min_support and iterations >= 1:
+            if tokens.issup >= self._issup_threshold:
+                if (
+                    retrieve_decision == RetrieveDecision.NO
+                    or tokens.isrel >= self._isrel_no_retrieve_threshold
+                ):
+                    break
                 break
 
+            if idx >= n_iter - 1:
+                continue
+
+            if retrieve_decision == RetrieveDecision.YES and retrieve_fn is not None:
+                refined_query = self._refined_query(question, partial)
+                try:
+                    refreshed_docs = retrieve_fn(refined_query)
+                    if refreshed_docs:
+                        docs = list(refreshed_docs)
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    logger.warning("Self-RAG refined retrieval failed (%s)", exc)
+
+        usefulness = self._map_usefulness(best_tokens.isuse)
         return SelfRAGResult(
             answer=best_answer,
-            retrieve_decision=retrieve_dec,
+            retrieve_decision=retrieve_decision,
             document_critiques=best_critiques,
-            usefulness=best_usefulness_token,
-            usefulness_score=best_usefulness_score,
-            support_score=best_support,
-            iterations=iterations,
+            usefulness=usefulness,
+            usefulness_score=best_tokens.isuse,
+            support_score=best_tokens.issup,
+            iterations=len(iteration_scores),
+            iteration_scores=iteration_scores,
+            total_tokens=total_tokens,
+            metadata={
+                "issup_threshold": self._issup_threshold,
+                "isrel_no_retrieve_threshold": self._isrel_no_retrieve_threshold,
+            },
         )
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
+# Backward-compatible alias for existing imports.
+SelfRAGPipeline = SelfRAGOrchestrator
 
-_self_rag_pipeline: SelfRAGPipeline | None = None
+
+_self_rag_pipeline: SelfRAGOrchestrator | None = None
 
 
-def get_self_rag_pipeline() -> SelfRAGPipeline:
-    """Return the module-level Self-RAG pipeline singleton (lazy init)."""
+def get_self_rag_pipeline() -> SelfRAGOrchestrator:
+    """Return module-level Self-RAG orchestrator singleton."""
     global _self_rag_pipeline
     if _self_rag_pipeline is None:
         from konjoai.config import get_settings
+
         s = get_settings()
-        _self_rag_pipeline = SelfRAGPipeline(
+        _self_rag_pipeline = SelfRAGOrchestrator(
             max_iterations=s.self_rag_max_iterations,
         )
     return _self_rag_pipeline
 
 
 def _reset_self_rag() -> None:
-    """Reset the singleton — used only in tests."""
+    """Reset singleton (test helper)."""
     global _self_rag_pipeline
     _self_rag_pipeline = None

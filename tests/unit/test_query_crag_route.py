@@ -29,6 +29,9 @@ class _SettingsStub:
     top_k_sparse: int = 8
     openai_model: str = "stub-model"
     request_timeout_seconds: float = 30.0
+    enable_graph_rag: bool = False
+    graph_rag_max_communities: int = 5
+    graph_rag_similarity_threshold: float = 0.3
 
 
 class _GeneratorStub:

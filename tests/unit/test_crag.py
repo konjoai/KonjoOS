@@ -1,25 +1,24 @@
-"""Unit tests for konjoai.retrieve.crag — Corrective RAG.
+"""Unit tests for Sprint 11 CRAG evaluator.
 
-Tests cover:
-1. RelevanceGrade enum values.
-2. DocumentGrader — uses a deterministic stub cross-encoder; no network call.
-3. CRAGPipeline — filtering, fallback trigger, confidence computation.
-4. Module singleton get/reset helpers.
+Covers:
+1. CORRECT/AMBIGUOUS/INCORRECT threshold bands.
+2. All-incorrect fallback trigger contract.
+3. Ambiguous refinement with decomposed sub-queries.
+4. Synthetic quality gates:
+   - no regression on clean corpus
+   - precision gain on noisy corpus
+5. Singleton helpers.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 from konjoai.retrieve.crag import (
-    CRAGPipeline,
+    CRAGClassification,
+    CRAGEvaluator,
     CRAGResult,
-    DocumentGrader,
-    GradedDocument,
-    RelevanceGrade,
     _reset_crag,
     get_crag_pipeline,
 )
@@ -45,156 +44,110 @@ def _make_docs(n: int, content_prefix: str = "doc") -> list[_Doc]:
     return [_Doc(content=f"{content_prefix} {i}", source=f"src_{i}.txt") for i in range(n)]
 
 
-def _make_grader_with_scores(scores: list[float]) -> DocumentGrader:
-    """Return a DocumentGrader whose cross-encoder returns *scores*."""
-    grader = DocumentGrader(threshold=0.0)
-    mock_model = MagicMock()
-    mock_model.predict.return_value = np.array(scores)
-    grader._model = mock_model
-    return grader
+class _StubEvaluator(CRAGEvaluator):
+    """Deterministic CRAG evaluator for unit tests.
+
+    ``scores`` are consumed sequentially by each internal ``_score_pairs`` call:
+    - first call: initial chunk scoring
+    - later calls: ambiguous refinement scoring (sub-query pairs)
+    """
+
+    def __init__(self, scores: list[float], enable_refine: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self._scores = list(scores)
+        self.fallback_called = False
+        self.enable_refine = enable_refine
+
+    def _score_pairs(self, pairs: list[tuple[str, str]]) -> list[float]:
+        if len(pairs) > len(self._scores):
+            raise AssertionError("not enough stub scores for test")
+        out = self._scores[: len(pairs)]
+        self._scores = self._scores[len(pairs) :]
+        return out
+
+    def _reembed_subqueries(self, sub_queries: list[str]) -> None:  # noqa: ARG002
+        # No heavy encoder loading in unit tests.
+        return
+
+    def _refine_ambiguous(self, query: str, ambiguous_chunks):
+        if not self.enable_refine:
+            return []
+        return super()._refine_ambiguous(query, ambiguous_chunks)
+
+    def web_fallback(self, query: str):  # noqa: ARG002
+        self.fallback_called = True
+        return []
 
 
-# ── RelevanceGrade ────────────────────────────────────────────────────────────
+# ── Classification thresholds ────────────────────────────────────────────────
 
-def test_grade_values():
-    assert RelevanceGrade.RELEVANT.value == "relevant"
-    assert RelevanceGrade.AMBIGUOUS.value == "ambiguous"
-    assert RelevanceGrade.IRRELEVANT.value == "irrelevant"
+def test_classification_bands_match_sprint11_contract():
+    ev = _StubEvaluator(scores=[0.71, 0.70, 0.30, 0.29])
+    result = ev.run("test query", _make_docs(4))
 
-
-def test_grade_string_comparison():
-    assert RelevanceGrade.RELEVANT == "relevant"
-
-
-# ── DocumentGrader ────────────────────────────────────────────────────────────
-
-class TestDocumentGrader:
-    def test_empty_query_raises(self):
-        grader = DocumentGrader()
-        with pytest.raises(ValueError, match="non-empty"):
-            grader.grade("", [_Doc("some text")])
-
-    def test_empty_docs_returns_empty(self):
-        grader = DocumentGrader()
-        result = grader.grade("what is X?", [])
-        assert result == []
-
-    def test_positive_score_is_relevant(self):
-        grader = _make_grader_with_scores([5.0])
-        docs = [_Doc("relevant content")]
-        graded = grader.grade("question", docs)
-        assert graded[0].grade == RelevanceGrade.RELEVANT
-
-    def test_negative_score_is_irrelevant(self):
-        grader = _make_grader_with_scores([-5.0])
-        docs = [_Doc("off-topic content")]
-        graded = grader.grade("question", docs)
-        assert graded[0].grade == RelevanceGrade.IRRELEVANT
-
-    def test_zero_score_is_ambiguous(self):
-        grader = _make_grader_with_scores([0.0])
-        docs = [_Doc("maybe relevant")]
-        graded = grader.grade("question", docs)
-        assert graded[0].grade == RelevanceGrade.AMBIGUOUS
-
-    def test_grades_match_doc_count(self):
-        scores = [3.0, -2.0, 0.5, -3.0]
-        grader = _make_grader_with_scores(scores)
-        docs = _make_docs(4)
-        graded = grader.grade("question", docs)
-        assert len(graded) == 4
-
-    def test_relevance_scores_preserved(self):
-        grader = _make_grader_with_scores([1.5])
-        graded = grader.grade("q", [_Doc("text")])
-        assert abs(graded[0].relevance_score - 1.5) < 1e-6
-
-    def test_source_preserved(self):
-        grader = _make_grader_with_scores([2.0])
-        doc = _Doc("text", source="special.txt")
-        graded = grader.grade("q", [doc])
-        assert graded[0].source == "special.txt"
-
-    def test_missing_sentence_transformers_raises_on_grade(self):
-        grader = DocumentGrader()
-        # _model is None and we mock the import to fail
-        with patch.dict("sys.modules", {"sentence_transformers": None}):
-            with pytest.raises((ImportError, TypeError)):
-                grader.grade("q", [_Doc("text")])
-
-    def test_custom_threshold(self):
-        grader = _make_grader_with_scores([1.0])
-        grader._threshold = 2.0       # score 1.0 < 2.0 → AMBIGUOUS
-        graded = grader.grade("q", [_Doc("x")])
-        assert graded[0].grade == RelevanceGrade.AMBIGUOUS
+    assert result.crag_classification == [
+        CRAGClassification.CORRECT.value,
+        CRAGClassification.AMBIGUOUS.value,
+        CRAGClassification.AMBIGUOUS.value,
+        CRAGClassification.INCORRECT.value,
+    ]
 
 
-# ── CRAGPipeline ──────────────────────────────────────────────────────────────
+def test_all_incorrect_triggers_fallback_stub():
+    ev = _StubEvaluator(scores=[0.1, 0.2])
+    result = ev.run("q", _make_docs(2))
 
-class TestCRAGPipeline:
-    def test_all_relevant_no_fallback(self):
-        grader = _make_grader_with_scores([5.0, 5.0, 5.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(3))
-        assert not result.needs_fallback
-        assert result.discarded_count == 0
+    assert result.fallback_triggered is True
+    assert ev.fallback_called is True
+    assert result.selected_chunks == []
 
-    def test_all_irrelevant_triggers_fallback(self):
-        grader = _make_grader_with_scores([-5.0, -5.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(2))
-        assert result.needs_fallback
-        assert len(result.documents) == 0
-        assert result.discarded_count == 2
 
-    def test_partial_irrelevant_removed(self):
-        # scores: 3.0 (relevant), -3.0 (irrelevant), 0.0 (ambiguous)
-        grader = _make_grader_with_scores([3.0, -3.0, 0.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(3))
-        assert result.discarded_count == 1
-        assert len(result.documents) == 2  # relevant + ambiguous kept
+def test_ambiguous_chunks_can_be_refined_into_correct():
+    docs = _make_docs(2)
+    ev = _StubEvaluator(scores=[0.9, 0.5, 0.92], enable_refine=True)
+    ev._decompose_query = lambda q: ["subquery"]  # type: ignore[method-assign]
 
-    def test_confidence_computed_from_relevant_docs(self):
-        grader = _make_grader_with_scores([4.0, 2.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(2))
-        expected = (4.0 + 2.0) / 2
-        assert abs(result.overall_confidence - expected) < 1e-5
+    result = ev.run("complex query", docs)
 
-    def test_empty_docs_no_fallback_when_min_zero(self):
-        # If min_relevant_docs=0 and no docs, fallback is not triggered
-        grader = _make_grader_with_scores([])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=0)
-        result = pipeline.run("q", [])
-        assert not result.needs_fallback
+    assert result.refinement_triggered is True
+    assert result.fallback_triggered is False
+    assert len(result.selected_chunks) == 2
+    assert all(c.classification == CRAGClassification.CORRECT for c in result.selected_chunks)
 
-    def test_returns_crag_result_type(self):
-        grader = _make_grader_with_scores([1.0])
-        pipeline = CRAGPipeline(grader=grader)
-        result = pipeline.run("q", _make_docs(1))
-        assert isinstance(result, CRAGResult)
 
-    def test_document_order_preserved(self):
-        grader = _make_grader_with_scores([3.0, 2.0, 1.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(3))
-        # All three are RELEVANT; order should match input
-        assert result.documents[0].content == "doc 0"
+def test_clean_corpus_has_no_recall_regression():
+    """If all chunks are high quality, CRAG should keep all of them."""
+    docs = _make_docs(4)
+    ev = _StubEvaluator(scores=[0.91, 0.88, 0.94, 0.97])
 
-    def test_ambiguous_docs_kept(self):
-        grader = _make_grader_with_scores([0.0, 0.0])   # both AMBIGUOUS (at threshold=0)
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(2))
-        # AMBIGUOUS docs are kept; but no RELEVANT → needs_fallback = True
-        assert len(result.documents) == 2
-        assert result.needs_fallback  # no RELEVANT docs
+    result = ev.run("clean corpus query", docs)
 
-    def test_zero_confidence_when_no_relevant(self):
-        grader = _make_grader_with_scores([-1.0, -2.0])
-        pipeline = CRAGPipeline(grader=grader, min_relevant_docs=1)
-        result = pipeline.run("q", _make_docs(2))
-        assert result.overall_confidence == 0.0
+    assert len(result.selected_chunks) == len(docs)
+    assert result.fallback_triggered is False
+    assert result.refinement_triggered is False
+
+
+def test_noisy_corpus_precision_improves_with_crag_filtering():
+    """Synthetic gate: CRAG should improve relevant-chunk precision on noisy sets."""
+    docs = [
+        _Doc(content="refund policy details", source="relevant_1"),
+        _Doc(content="shipping and return timeline", source="relevant_2"),
+        _Doc(content="weather report", source="noise_1"),
+        _Doc(content="sports scores", source="noise_2"),
+        _Doc(content="movie rankings", source="noise_3"),
+    ]
+    relevant_sources = {"relevant_1", "relevant_2"}
+
+    # Keep the two relevant chunks as CORRECT and classify noisy chunks as INCORRECT/AMBIGUOUS.
+    ev = _StubEvaluator(scores=[0.93, 0.89, 0.14, 0.22, 0.41])
+    ev._decompose_query = lambda q: [q]  # type: ignore[method-assign]
+    result = ev.run("what is our refund policy", docs)
+
+    baseline_precision = len(relevant_sources) / len(docs)
+    selected_relevant = sum(1 for d in result.selected_chunks if d.source in relevant_sources)
+    crag_precision = selected_relevant / len(result.selected_chunks)
+
+    assert crag_precision > baseline_precision
 
 
 # ── Module singleton ──────────────────────────────────────────────────────────

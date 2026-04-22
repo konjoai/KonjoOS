@@ -3,6 +3,29 @@
 All notable changes to KonjoOS are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] — Sprint 15: Lightweight GraphRAG Community Detection (v0.8.5)
+
+### Added
+- `konjoai/retrieve/graph_rag.py` — `GraphRAGRetriever` using NetworkX community detection:
+  - `_tokenize()` — stopword-stripped, lowercased token sets for Jaccard similarity
+  - `EntityGraph` — Jaccard similarity graph construction (O(n²), n≤20 chunk limit)
+  - `CommunityContext` — community label + member content container
+  - `GraphRAGResult` — final retrieval result with community summaries
+  - `GraphRAGRetriever` — full retriever: build graph → Louvain communities → top-K by relevance
+  - `get_graph_rag_retriever()` — singleton factory (feature-flagged off by default)
+- `tests/unit/test_graph_rag.py` — 37 tests covering entity graph, community detection, retriever, K3 gate, edge cases
+
+### Changed
+- `konjoai/config.py`: added `enable_graph_rag: bool = False`, `graph_rag_max_communities: int = 5`, `graph_rag_similarity_threshold: float = 0.3`
+- `konjoai/api/schemas.py`: added `QueryRequest.use_graph_rag: bool = Field(False, ...)`, `QueryResponse.graph_rag_communities: list[str] | None = None`
+- `konjoai/api/routes/query.py`: K3 gate (`if settings.enable_graph_rag and req.use_graph_rag`) injected after hybrid retrieval; `X-Use-Graph-Rag` header parsed; `graph_rag_communities` threaded to response
+- `requirements.txt`: `networkx>=3.2` added
+- `tests/unit/test_query_crag_route.py`, `test_query_self_rag_route.py`, `test_query_decomposition_route.py`, `test_query_route_timeout.py`: `_SettingsStub` updated with 3 new GraphRAG fields
+
+### Tests
+- Focused run: `python3 -m pytest tests/unit/test_graph_rag.py -v` → **37 passed in 8.53s**
+- Full regression: `python3 -m pytest tests/unit/ -q --tb=short` → **464 passed in 10.16s**
+
 ## [Unreleased] — Pre-Sprint-15: Query Route Timeout Parity
 
 ### Added

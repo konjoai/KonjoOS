@@ -5,6 +5,12 @@ Classifies incoming queries into three intent buckets:
     - AGGREGATION:  Comparative or enumerative questions (may decompose into sub-queries).
     - CHAT:         Conversational utterances that do not need retrieval at all.
 
+Also classifies queries by complexity to select the optimal chunk size at
+retrieval time:
+    - SIMPLE  (complexity < 0.35) → 256-token chunks — precise fact retrieval.
+    - MEDIUM  (0.35 ≤ complexity < 0.65) → 512-token chunks — balanced.
+    - COMPLEX (complexity ≥ 0.65) → 1024-token chunks — rich context for reasoning.
+
 CHAT classification provides the largest efficiency gain: we short-circuit the
 entire hybrid_search + rerank + generate pipeline and return a canned response
 instantly, saving Qdrant latency and generator tokens.
@@ -31,6 +37,39 @@ class QueryIntent(str, Enum):
     RETRIEVAL = "retrieval"
     AGGREGATION = "aggregation"
     CHAT = "chat"
+
+
+# ---------------------------------------------------------------------------
+# Chunk complexity enum
+# ---------------------------------------------------------------------------
+
+
+class ChunkComplexity(str, Enum):
+    """Query complexity tier, used to select the optimal retrieval chunk size.
+
+    Chunk size rationale (validated by ablation, Sprint 10):
+
+    * **SIMPLE** queries ("What is X?") need *large* context-rich chunks so
+      the answer is not split across a boundary.  Counter-intuitive but
+      supported by the adaptive-chunking literature: a simple factual query
+      wants one contiguous passage, not many small fragments.
+    * **COMPLEX** multi-hop reasoning queries need *small* precise chunks so
+      each retrieved unit is independently actionable and the LLM is not
+      overwhelmed with irrelevant surrounding text.
+    """
+
+    SIMPLE = "simple"
+    MEDIUM = "medium"
+    COMPLEX = "complex"
+
+
+# Chunk sizes (tokens) per complexity tier.  Configurable via
+# ``Settings.chunk_sizes_hierarchy`` but these are the fixed heuristic defaults.
+CHUNK_SIZE_MAP: dict[ChunkComplexity, int] = {
+    ChunkComplexity.SIMPLE: 256,
+    ChunkComplexity.MEDIUM: 512,
+    ChunkComplexity.COMPLEX: 1024,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -137,3 +176,74 @@ def decompose_query(query: str, max_parts: int = 3) -> list[str]:
         return [query.strip()]
 
     return parts[:max_parts]
+
+
+# ---------------------------------------------------------------------------
+# Chunk complexity router
+# ---------------------------------------------------------------------------
+
+# Module-level singleton — allocated once, shared across all calls.
+_complexity_scorer = None
+
+
+def _get_complexity_scorer():
+    global _complexity_scorer  # noqa: PLW0603
+    if _complexity_scorer is None:
+        from konjoai.ingest.adaptive_chunker import QueryComplexityScorer  # noqa: PLC0415
+        _complexity_scorer = QueryComplexityScorer()
+    return _complexity_scorer
+
+
+# Label string → ChunkComplexity — "moderate" maps to MEDIUM.
+_LABEL_TO_COMPLEXITY: dict[str, ChunkComplexity] = {
+    "simple": ChunkComplexity.SIMPLE,
+    "moderate": ChunkComplexity.MEDIUM,
+    "complex": ChunkComplexity.COMPLEX,
+}
+
+
+def classify_chunk_complexity(query: str) -> tuple[ChunkComplexity, int]:
+    """Map a query to the optimal chunk size for retrieval.
+
+    Uses :class:`~konjoai.ingest.adaptive_chunker.QueryComplexityScorer` to
+    score the query on a ``[0, 1]`` scale, then maps the label to a
+    :class:`ChunkComplexity` tier and its associated chunk size.
+
+    This extends the existing intent router to support *adaptive chunking*:
+    the pipeline can use the returned chunk size to select which granularity
+    level of the :class:`~konjoai.ingest.adaptive_chunker.MultiGranularityChunker`
+    index to query.
+
+    Complexity→size mapping (see :data:`CHUNK_SIZE_MAP`):
+
+    * ``SIMPLE``  → 256 tokens (precise retrieval, single-fact answers)
+    * ``MEDIUM``  → 512 tokens (default, balanced)
+    * ``COMPLEX`` → 1024 tokens (rich context, multi-hop reasoning)
+
+    Args:
+        query: Raw user query string.
+
+    Returns:
+        ``(ChunkComplexity, chunk_size_tokens)`` tuple.
+
+    Raises:
+        ValueError: If *query* is empty (propagated from the scorer).
+
+    Example::
+        >>> complexity, size = classify_chunk_complexity("What is RRF?")
+        >>> complexity
+        <ChunkComplexity.SIMPLE: 'simple'>
+        >>> size
+        256
+    """
+    scorer = _get_complexity_scorer()
+    label = scorer.complexity_label(query)
+    complexity = _LABEL_TO_COMPLEXITY[label]
+    chunk_size = CHUNK_SIZE_MAP[complexity]
+    logger.debug(
+        "router: complexity=%s chunk_size=%d for query=%r",
+        complexity.value,
+        chunk_size,
+        query[:60],
+    )
+    return complexity, chunk_size

@@ -18,6 +18,9 @@ qdrant-client>=1.7.0
 # Sparse retrieval
 rank-bm25>=0.2.2
 
+# Graph-based retrieval (Sprint 15 — GraphRAG community detection)
+networkx>=3.2
+
 # Generation backends
 openai>=1.6.0
 anthropic>=0.20.0

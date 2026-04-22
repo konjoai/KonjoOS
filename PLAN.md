@@ -9,11 +9,11 @@
 
 ---
 
-## Current State: Sprint 14 Complete (v0.8.0)
+## Current State: Sprint 15 Complete (v0.8.5)
 
-- **Tests:** 427 passing, 0 failing
+- **Tests:** 464 passing, 0 failing
 - **Branch:** `main`
-- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking (SemanticSplitter, LateChunker, ChunkComplexity router)
+- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking + CRAG + Self-RAG + Query Decomposition + Agentic RAG + **GraphRAG (Sprint 15)**
 
 ---
 
@@ -40,6 +40,31 @@
 3. Endpoint preserves K3/K6 behavior (telemetry optional, no breaking change to `/query`). ✅
 4. Focused unit tests pass for new agent core and route. ✅
 5. Endpoint timeout is enforced and returns deterministic 504 on overrun. ✅
+
+---
+
+## Completed Sprint: Sprint 15 — Lightweight GraphRAG (v0.8.5)
+
+**Goal:** Group semantically related retrieved chunks into communities via Louvain-style community detection. Surface one representative per community to the reranker — reducing near-duplicate context while preserving topical diversity. Feature-flagged off by default (K3).
+
+### Implementation Checklist — Sprint 15
+
+| # | File | Change | Status |
+|---|---|---|---|
+| 1 | `konjoai/retrieve/graph_rag.py` | `EntityGraph` (Jaccard-weighted graph), `GraphRAGRetriever` (community detection via `greedy_modularity_communities`), `CommunityContext`, `GraphRAGResult`, singleton factory | ✅ |
+| 2 | `konjoai/config.py` | `enable_graph_rag=False`, `graph_rag_max_communities=5`, `graph_rag_similarity_threshold=0.3` | ✅ |
+| 3 | `konjoai/api/schemas.py` | `QueryRequest.use_graph_rag: bool = False`; `QueryResponse.graph_rag_communities: list[str] \| None = None` | ✅ |
+| 4 | `konjoai/api/routes/query.py` | Step 3c injection (after hybrid retrieval, before CRAG); `x-use-graph-rag` header support; `graph_rag_enabled` K3 gate | ✅ |
+| 5 | `requirements.txt` | `networkx>=3.2` | ✅ |
+| 6 | `tests/unit/test_graph_rag.py` | 37 tests covering `_tokenize`, `EntityGraph`, `CommunityContext`, `GraphRAGResult`, `GraphRAGRetriever`, singleton, and K3 route gate (disabled / settings / body / header) | ✅ |
+| 7 | Existing test stubs (4 files) | Added `enable_graph_rag`, `graph_rag_max_communities`, `graph_rag_similarity_threshold` to `_SettingsStub` dataclasses | ✅ |
+
+### Sprint 15 Gate Results
+
+1. `greedy_modularity_communities` with Jaccard edges — deterministic, no extra embedding cost. ✅
+2. K3: disabled by default; graceful networkx-absent fallback returns raw hybrid results. ✅
+3. K6: `use_graph_rag=False` default; `graph_rag_communities=None` default — no breaking change. ✅
+4. `464 passed, 0 failed` (up from 427 — +37 tests). ✅
 
 ---
 
@@ -137,7 +162,7 @@
 | 12 | v0.7.0 | P2 | Self-RAG — reflection tokens + critique loop | ✅ |
 | 13 | v0.7.5 | P3 | Query decomposition (multi-hop fan-out) | ✅ |
 | 14 | v0.8.0 | P3 | Agentic RAG — ReAct loop | ✅ |
-| 15 | v0.8.5 | P3 | Lightweight GraphRAG (NetworkX + Louvain) | ⬜ |
+| 15 | v0.8.5 | P3 | Lightweight GraphRAG (NetworkX + Louvain) | ✅ 464 tests |
 | 16 | v0.8.7 | P4 | OTel + Prometheus + Grafana | ⬜ |
 | 17 | v0.9.0 | P4 | Multi-tenancy + JWT | ⬜ |
 | 18 | v0.9.5 | P4 | Auth + rate limiting | ⬜ |

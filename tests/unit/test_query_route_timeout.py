@@ -35,6 +35,9 @@ class _SettingsNormal:
     top_k_sparse: int = 5
     openai_model: str = "stub-model"
     request_timeout_seconds: float = 30.0
+    enable_graph_rag: bool = False
+    graph_rag_max_communities: int = 5
+    graph_rag_similarity_threshold: float = 0.3
 
 
 @dataclass
@@ -54,6 +57,9 @@ class _SettingsTimeout:
     top_k_sparse: int = 5
     openai_model: str = "stub-model"
     request_timeout_seconds: float = 0.01  # 10 ms — reliably fires before 50 ms sleep
+    enable_graph_rag: bool = False
+    graph_rag_max_communities: int = 5
+    graph_rag_similarity_threshold: float = 0.3
 
 
 def _make_app() -> FastAPI:

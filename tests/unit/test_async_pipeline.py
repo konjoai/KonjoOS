@@ -31,9 +31,11 @@ class TestAsyncSourceInspection:
 
     def test_gather_used_for_aggregation(self) -> None:
         import konjoai.api.routes.query as q_mod
+        import konjoai.retrieve.decomposition as d_mod
 
-        src = inspect.getsource(q_mod)
-        assert "asyncio.gather" in src
+        query_src = inspect.getsource(q_mod)
+        decomposition_src = inspect.getsource(d_mod)
+        assert "asyncio.gather" in query_src or "asyncio.gather" in decomposition_src
 
     def test_asyncio_imported_in_query_module(self) -> None:
         import konjoai.api.routes.query as q_mod

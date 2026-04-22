@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     # ── Chunking ──────────────────────────────────────────────────────────────
     chunk_size: int = 512
     chunk_overlap: int = 64
-    chunk_strategy: str = "recursive"  # "recursive" | "sentence_window"
+    chunk_strategy: str = "recursive"  # "recursive" | "sentence_window" | "semantic" | "late"
+
+    # Thresholds for embedding-based chunkers (Sprint 10)
+    semantic_split_threshold: float = 0.4    # SemanticSplitter: cosine sim below which a boundary is inserted
+    late_chunk_threshold: float = 0.4        # LateChunker: cosine sim below which a boundary is inserted
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     top_k_dense: int = 20
@@ -88,12 +92,21 @@ class Settings(BaseSettings):
 
     # ── CRAG — Corrective RAG (Sprint 11) ────────────────────────────────────
     enable_crag: bool = False                        # off by default; K3 graceful degradation
-    crag_relevance_threshold: float = 0.0            # cross-encoder logit threshold; >0 = RELEVANT
-    crag_min_relevant_docs: int = 1                  # fallback triggered below this count
+    crag_correct_threshold: float = 0.7              # score > threshold => CORRECT
+    crag_ambiguous_threshold: float = 0.3            # threshold <= score <= correct => AMBIGUOUS
 
     # ── Self-RAG — Reflective Generation (Sprint 12) ─────────────────────────
     enable_self_rag: bool = False                    # off by default
-    self_rag_max_iterations: int = 2                 # max generate → critique cycles
+    self_rag_max_iterations: int = 3                 # max generate → critique cycles
+
+    # ── Query Decomposition — Multi-hop Fan-out (Sprint 13) ──────────────────
+    enable_query_decomposition: bool = False         # off by default
+    decomposition_max_sub_queries: int = 4           # bounded fan-out guard
+
+    # ── GraphRAG — Community-based Retrieval (Sprint 15) ─────────────────────
+    enable_graph_rag: bool = False               # off by default; K3 graceful degradation
+    graph_rag_max_communities: int = 5           # max communities to surface per query
+    graph_rag_similarity_threshold: float = 0.3  # Jaccard edge threshold [0, 1]
 
     # ── Async Pipeline (Sprint 8) ─────────────────────────────────────────────
     async_enabled: bool = True               # on by default for async pipeline

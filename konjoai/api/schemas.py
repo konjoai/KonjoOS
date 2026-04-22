@@ -70,6 +70,10 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     top_k: int = Field(5, ge=1, le=50)
     use_hyde: bool = Field(False, description="Replace the raw query embedding with a Vectro-compatible HyDE hypothesis embedding (Gao et al. 2022).")
+    use_crag: bool = Field(False, description="Enable CRAG critique for this request only.")
+    use_self_rag: bool = Field(False, description="Enable Self-RAG reflective loop for this request only.")
+    use_decomposition: bool = Field(False, description="Enable Sprint 13 query decomposition for this request only.")
+    use_graph_rag: bool = Field(False, description="Enable Sprint 15 GraphRAG community-based retrieval for this request only.")
     stream: bool = Field(False, description="Hint only; use POST /query/stream to actually stream tokens.")
 
 
@@ -90,8 +94,18 @@ class QueryResponse(BaseModel):
     # ── Self-correcting retrieval metadata (Sprints 11–12) ───────────────────
     crag_confidence: float | None = None    # mean relevance score from CRAG; None when disabled
     crag_fallback: bool | None = None       # True if CRAG triggered corrective fallback
+    crag_scores: list[float] | None = None  # per-chunk normalized CRAG scores [0, 1]
+    crag_classification: list[str] | None = None  # per-chunk class labels
+    crag_refinement_triggered: bool | None = None # True when ambiguous chunks invoked refinement
     self_rag_support: float | None = None   # mean support score from Self-RAG; None when disabled
     self_rag_iterations: int | None = None  # number of Self-RAG generate→critique cycles
+    self_rag_iteration_scores: list[dict[str, float]] | None = None  # per-iteration ISREL/ISSUP/ISUSE
+    self_rag_total_tokens: int | None = None  # cumulative generated token count across Self-RAG iterations
+    decomposition_used: bool | None = None  # True when Sprint 13 decomposition was executed
+    decomposition_sub_queries: list[str] | None = None  # generated sub-query list
+    decomposition_synthesis_hint: str | None = None  # synthesis hint emitted by QueryDecomposer
+    # ── GraphRAG community metadata (Sprint 15) ───────────────────────────────
+    graph_rag_communities: list[str] | None = None  # community label list; None when GraphRAG disabled
 
 
 # ── Eval ─────────────────────────────────────────────────────────────────────

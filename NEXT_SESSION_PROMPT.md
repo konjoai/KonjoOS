@@ -2,20 +2,23 @@
 
 Read this first before any implementation sprint.
 
-## Current State (as of pre-Sprint-15 session, 2026-04-22)
+## Current State (as of Sprint 15 session, 2026-04-22)
 
-- **Last commit:** `e48ed09` on `main` — Pre-Sprint-15: Query Route Timeout Parity
-- **Tests:** 427 passing, 0 failing (`python3 -m pytest tests/unit/ -q --tb=short`)
-- **Version:** v0.8.0 (Sprint 14 Agentic RAG complete)
-- **Active sprint:** Sprint 15 — Lightweight GraphRAG (v0.8.5) — NOT STARTED
+- **Last commit:** pending push — Sprint 15: Lightweight GraphRAG Community Detection
+- **Tests:** 464 passing, 0 failing (`python3 -m pytest tests/unit/ -q --tb=short`)
+- **Version:** v0.8.5 (Sprint 15 GraphRAG complete)
+- **Active sprint:** Sprint 16 — OTel / Prometheus / Grafana Observability Layer
 
-## What Was Done Last Session
+## What Was Done Last Session (Sprint 15 — GraphRAG)
 
-- Added `asyncio.wait_for` timeout to `POST /query` and `POST /query/stream` (`_execute()` + `_stream_execute()` closures)
-- Added `logger.warning(...)` on both `asyncio.TimeoutError` paths (K2 compliance fix)
-- Created `tests/unit/test_query_route_timeout.py` (4 tests)
-- Updated `_SettingsStub` in 3 existing test files with `request_timeout_seconds: float = 30.0`
-- ruff permanently absent — skip forever; use `python3 -m py_compile` + manual K1-K7 in all future CRITIC phases
+- Created `konjoai/retrieve/graph_rag.py`: `_tokenize()`, `EntityGraph` (Jaccard similarity graph builder), `CommunityContext`, `GraphRAGResult`, `GraphRAGRetriever`, `get_graph_rag_retriever()` singleton; `_HAS_NETWORKX` guard for graceful fallback when networkx absent
+- Added 3 settings to `konjoai/config.py`: `enable_graph_rag: bool = False`, `graph_rag_max_communities: int = 5`, `graph_rag_similarity_threshold: float = 0.3`
+- Extended `konjoai/api/schemas.py`: `QueryRequest.use_graph_rag: bool = Field(False, ...)`, `QueryResponse.graph_rag_communities: list[str] | None = None`
+- Injected K3-gated GraphRAG block (Step 3c after hybrid retrieval) into `konjoai/api/routes/query.py`; `X-Use-Graph-Rag` response header
+- Added `networkx>=3.2` to `requirements.txt`
+- Created `tests/unit/test_graph_rag.py` (37 tests — tokenizer, entity graph, communities, retriever, K3 gate, NetworkX-absent fallback)
+- Updated `_SettingsStub` in 4 existing route test files with 3 new GraphRAG fields
+- Tests: 427 → 464 (+37 new). ruff permanently absent — `python3 -m py_compile` only.
 
 ## Active Invariants (K1–K7)
 
@@ -35,33 +38,37 @@ Read this first before any implementation sprint.
 - `DREX_UNIFIED_SPEC.md` canonical source is shared from the `drex` workspace; kyro keeps a local pointer file.
 - ruff is permanently absent from this machine — skip it everywhere. Syntax check via `python3 -m py_compile`.
 
-## Recommended Next Task — Sprint 15 Wave 1: Lightweight GraphRAG
+## Recommended Next Task — Sprint 16: OTel / Prometheus / Grafana Observability Layer
 
 ### Goal
-Scaffold `GraphRAGRetriever` using NetworkX community detection (Louvain via `greedy_modularity_communities`). Feature-flagged off by default (K3). No breaking API changes (K6).
+Add structured observability using OpenTelemetry (OTel) for tracing and Prometheus for metrics. Feature-flagged off by default (K3). No breaking API changes (K6).
 
 ### Files to Create/Modify
 
 | File | Change |
 |------|--------|
-| `konjoai/retrieve/graph_rag.py` | New: `EntityGraph`, `GraphRAGRetriever`, `CommunityContext` |
-| `konjoai/config.py` | Add `enable_graph_rag: bool = False`, `graph_rag_max_communities: int = 5` |
-| `konjoai/api/schemas.py` | Add `QueryRequest.use_graph_rag: bool = False`, `QueryResponse.graph_rag_communities: list[str] \| None = None` |
-| `konjoai/api/routes/query.py` | K3 gate: `if settings.enable_graph_rag and req.use_graph_rag` |
-| `requirements.txt` | Add `networkx>=3.2` |
-| `tests/unit/test_graph_rag.py` | New: ≥ 20 tests covering entity graph, community detection, retriever, K3 gate |
+| `konjoai/telemetry.py` | New: OTel tracer + Prometheus counters/histograms; `_HAS_OTEL` guard |
+| `konjoai/config.py` | Add `enable_telemetry: bool = False`, `otel_endpoint: str = ""`, `prometheus_port: int = 8001` |
+| `konjoai/api/routes/query.py` | Instrument `/query` span; record latency histogram |
+| `konjoai/api/routes/health.py` | Add `/metrics` Prometheus endpoint (conditional on `enable_telemetry`) |
+| `requirements.txt` | Add `opentelemetry-sdk>=1.20`, `prometheus-client>=0.19` as optional extras |
+| `tests/unit/test_telemetry.py` | New: ≥ 20 tests covering tracer, metrics, K3 gate, OTel-absent fallback |
 
-### Sprint 15 Gate (all required before SHIP)
-1. `GraphRAGRetriever` is feature-flagged off by default (K3) ✅
-2. No breaking changes to `/query` or `/query/stream` when flag is off (K6) ✅
-3. `networkx` is the only new dependency; no GPU/heavy deps (K5) ✅
+### Sprint 16 Gate (all required before SHIP)
+1. All telemetry behind `if settings.enable_telemetry` (K3) ✅
+2. No breaking changes to existing routes when flag is off (K6) ✅
+3. New deps optional or guarded with `_HAS_OTEL` (K5) ✅
 4. All K1-K7 pass on new code ✅
-5. Full suite stays at ≥ 427 tests passing ✅
+5. Full suite stays at ≥ 464 tests passing ✅
 
 ### Critical Patch Target Rule (NEVER FORGET)
 Lazy imports inside closures must be patched at the **source module**, not at the route module.
-- ✅ `konjoai.retrieve.hybrid.hybrid_search`
-- ❌ `konjoai.api.routes.query.hybrid_search`
+- ✅ `konjoai.retrieve.hybrid.hybrid_search` → patch at source
+- ❌ `konjoai.api.routes.query.hybrid_search` → DO NOT patch here
+
+Route-level `Depends`-injected callables patch at the **route module**:
+- ✅ `konjoai.api.routes.query.get_settings` → patch here in ALL route tests
+- ✅ `konjoai.cache.get_semantic_cache` → always mock alongside `get_settings` in route tests
 
 ## Quick Commands
 
@@ -71,11 +78,14 @@ cd /Users/wscholl/kyro
 # Run full unit suite
 python3 -m pytest tests/unit/ -q --tb=short
 
-# Run focused test file
+# Run focused test file (update per sprint)
+python3 -m pytest tests/unit/test_telemetry.py -v
+
+# Verify Sprint 15 GraphRAG still passes
 python3 -m pytest tests/unit/test_graph_rag.py -v
 
 # CRITIC syntax check (ruff is permanently absent — skip it always)
-python3 -m py_compile konjoai/retrieve/graph_rag.py
+python3 -m py_compile konjoai/telemetry.py
 
 # Check recent git log
 git log --oneline -5

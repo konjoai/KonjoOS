@@ -73,6 +73,7 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:  # noqa: 
         decomposition_used: bool | None = None
         decomposition_sub_queries: list[str] | None = None
         decomposition_synthesis_hint: str | None = None
+        graph_rag_communities: list[str] | None = None
 
         header_use_crag = _parse_bool_header(
             request.headers.get("use_crag")
@@ -89,6 +90,11 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:  # noqa: 
             or request.headers.get("use-decomposition")
             or request.headers.get("x-use-decomposition")
         )
+        header_use_graph_rag = _parse_bool_header(
+            request.headers.get("use_graph_rag")
+            or request.headers.get("use-graph-rag")
+            or request.headers.get("x-use-graph-rag")
+        )
         crag_enabled = bool(settings.enable_crag or req.use_crag or header_use_crag)
         self_rag_enabled = bool(
             settings.enable_self_rag or req.use_self_rag or header_use_self_rag
@@ -97,6 +103,11 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:  # noqa: 
             settings.enable_query_decomposition
             or req.use_decomposition
             or header_use_decomposition
+        )
+        graph_rag_enabled = bool(
+            settings.enable_graph_rag
+            or req.use_graph_rag
+            or header_use_graph_rag
         )
 
         # ── Step 1: Intent routing ────────────────────────────────────────────────
@@ -205,7 +216,28 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:  # noqa: 
                     hybrid_results = await asyncio.to_thread(
                         hybrid_search, effective_question, q_vec=q_vec
                     )
+        # ── Step 3c: GraphRAG — community-based chunk deduplication ───────────────
+        if graph_rag_enabled and hybrid_results:
+            from konjoai.retrieve.graph_rag import get_graph_rag_retriever
 
+            with timed(tel, "graph_rag", n_chunks=len(hybrid_results)):
+                _graph_rag = get_graph_rag_retriever(
+                    max_communities=settings.graph_rag_max_communities,
+                    similarity_threshold=settings.graph_rag_similarity_threshold,
+                )
+                _graph_rag_result = await asyncio.to_thread(
+                    _graph_rag.retrieve, hybrid_results
+                )
+            graph_rag_communities = _graph_rag_result.community_labels
+            if not _graph_rag_result.used_fallback and _graph_rag_result.representative_chunks:
+                hybrid_results = _graph_rag_result.representative_chunks
+            logger.debug(
+                "GraphRAG: communities=%d nodes=%d edges=%d fallback=%s",
+                len(_graph_rag_result.communities),
+                _graph_rag_result.n_nodes,
+                _graph_rag_result.n_edges,
+                _graph_rag_result.used_fallback,
+            )
         # ── Step 3b: CRAG — Corrective RAG relevance grading ─────────────────────
         if crag_enabled and hybrid_results:
             from konjoai.retrieve.crag import get_crag_pipeline
@@ -367,6 +399,7 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:  # noqa: 
             decomposition_used=decomposition_used,
             decomposition_sub_queries=decomposition_sub_queries,
             decomposition_synthesis_hint=decomposition_synthesis_hint,
+            graph_rag_communities=graph_rag_communities,
         )
         # Cache store (after full pipeline; K3: no-op when cache_enabled=False)
         if q_vec is not None:

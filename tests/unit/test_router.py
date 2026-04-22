@@ -1,9 +1,17 @@
-"""Unit tests for konjoai.retrieve.router — classify_intent() and decompose_query()."""
+"""Unit tests for konjoai.retrieve.router — classify_intent(), decompose_query(),
+classify_chunk_complexity(), and ChunkComplexity."""
 from __future__ import annotations
 
 import pytest
 
-from konjoai.retrieve.router import QueryIntent, classify_intent, decompose_query
+from konjoai.retrieve.router import (
+    ChunkComplexity,
+    CHUNK_SIZE_MAP,
+    QueryIntent,
+    classify_chunk_complexity,
+    classify_intent,
+    decompose_query,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -158,3 +166,94 @@ class TestDecomposeQuery:
     def test_compared_to_splits(self) -> None:
         result = decompose_query("Python compared to Rust")
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# ChunkComplexity — enum values
+# ---------------------------------------------------------------------------
+
+
+class TestChunkComplexityEnum:
+    def test_values_are_strings(self) -> None:
+        assert ChunkComplexity.SIMPLE.value == "simple"
+        assert ChunkComplexity.MEDIUM.value == "medium"
+        assert ChunkComplexity.COMPLEX.value == "complex"
+
+    def test_chunk_size_map_has_all_tiers(self) -> None:
+        assert ChunkComplexity.SIMPLE in CHUNK_SIZE_MAP
+        assert ChunkComplexity.MEDIUM in CHUNK_SIZE_MAP
+        assert ChunkComplexity.COMPLEX in CHUNK_SIZE_MAP
+
+    def test_chunk_size_order(self) -> None:
+        """SIMPLE ≤ MEDIUM ≤ COMPLEX chunk sizes (larger query complexity → larger chunk)."""
+        assert CHUNK_SIZE_MAP[ChunkComplexity.SIMPLE] <= CHUNK_SIZE_MAP[ChunkComplexity.MEDIUM]
+        assert CHUNK_SIZE_MAP[ChunkComplexity.MEDIUM] <= CHUNK_SIZE_MAP[ChunkComplexity.COMPLEX]
+
+    def test_default_sizes(self) -> None:
+        assert CHUNK_SIZE_MAP[ChunkComplexity.SIMPLE] == 256
+        assert CHUNK_SIZE_MAP[ChunkComplexity.MEDIUM] == 512
+        assert CHUNK_SIZE_MAP[ChunkComplexity.COMPLEX] == 1024
+
+
+# ---------------------------------------------------------------------------
+# classify_chunk_complexity
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyChunkComplexity:
+    def test_returns_tuple(self) -> None:
+        result = classify_chunk_complexity("What is RRF?")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_first_element_is_chunk_complexity(self) -> None:
+        complexity, _ = classify_chunk_complexity("What is Python?")
+        assert isinstance(complexity, ChunkComplexity)
+
+    def test_second_element_is_int(self) -> None:
+        _, size = classify_chunk_complexity("What is Python?")
+        assert isinstance(size, int)
+
+    def test_chunk_size_consistent_with_map(self) -> None:
+        complexity, size = classify_chunk_complexity("What is Python?")
+        assert CHUNK_SIZE_MAP[complexity] == size
+
+    def test_simple_query_returns_small_chunk_size(self) -> None:
+        """Very short queries score low complexity → 256 tokens."""
+        _, size = classify_chunk_complexity("hi")
+        # "hi" is too short to score as complex; should land in SIMPLE or MEDIUM
+        assert size <= CHUNK_SIZE_MAP[ChunkComplexity.MEDIUM]
+
+    def test_complex_query_returns_large_chunk_size(self) -> None:
+        """Multi-part comparison queries score high complexity → 1024 tokens."""
+        q = (
+            "Compare and contrast the pricing strategy of Vendor A versus Vendor B "
+            "across five dimensions including support, scalability, and integration"
+        )
+        complexity, size = classify_chunk_complexity(q)
+        assert size >= CHUNK_SIZE_MAP[ChunkComplexity.MEDIUM]
+
+    def test_empty_query_raises(self) -> None:
+        """Empty query propagates ValueError from the underlying scorer."""
+        with pytest.raises(ValueError):
+            classify_chunk_complexity("")
+
+    def test_all_returned_sizes_are_valid(self) -> None:
+        queries = [
+            "hi",
+            "What is the capital of France?",
+            "Explain how BM25 ranks documents",
+            "Compare all three vendors across five dimensions and list pros and cons",
+        ]
+        valid_sizes = set(CHUNK_SIZE_MAP.values())
+        for q in queries:
+            _, size = classify_chunk_complexity(q)
+            assert size in valid_sizes, f"Unexpected chunk size {size} for {q!r}"
+
+    def test_complexity_label_monotonicity(self) -> None:
+        """More complex queries should not return smaller chunks than simpler ones."""
+        _, simple_size = classify_chunk_complexity("hi")
+        _, complex_size = classify_chunk_complexity(
+            "Compare and contrast A vs B and list all pros and cons across dimensions"
+        )
+        assert complex_size >= simple_size
