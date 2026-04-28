@@ -211,7 +211,14 @@ class _AuthSettingsStub:
 
 
 class TestGetTenantIdDep:
-    """Test the get_tenant_id async generator dependency in isolation."""
+    """Test the get_tenant_id async generator dependency in isolation.
+
+    Sprint 18: tests call the internal ``_resolve_tenant_id`` helper directly
+    (accepts ``request=None``) so unit tests do not need to construct a full
+    FastAPI Request object.  ``get_tenant_id`` is the public FastAPI dep that
+    delegates to ``_resolve_tenant_id``; its non-optional Request param is
+    required by FastAPI's DI system and cannot be Optional.
+    """
 
     def _stub_creds(self, token: str):
         from fastapi.security import HTTPAuthorizationCredentials
@@ -223,19 +230,19 @@ class TestGetTenantIdDep:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_multi_tenancy_disabled(self) -> None:
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         with patch("konjoai.auth.deps.get_settings", return_value=_AuthSettingsStub(multi_tenancy_enabled=False)):
-            gen = get_tenant_id(credentials=None)
+            gen = _resolve_tenant_id(request=None, credentials=None)
             result = await self._collect(gen)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_raises_401_when_enabled_and_no_credentials(self) -> None:
         from fastapi import HTTPException
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         stub = _AuthSettingsStub(multi_tenancy_enabled=True, jwt_secret_key="s")
         with patch("konjoai.auth.deps.get_settings", return_value=stub):
-            gen = get_tenant_id(credentials=None)
+            gen = _resolve_tenant_id(request=None, credentials=None)
             with pytest.raises(HTTPException) as exc_info:
                 await self._collect(gen)
         assert exc_info.value.status_code == 401
@@ -243,11 +250,11 @@ class TestGetTenantIdDep:
     @pytest.mark.asyncio
     async def test_raises_503_when_secret_not_configured(self) -> None:
         from fastapi import HTTPException
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         stub = _AuthSettingsStub(multi_tenancy_enabled=True, jwt_secret_key="")
         creds = self._stub_creds("sometoken")
         with patch("konjoai.auth.deps.get_settings", return_value=stub):
-            gen = get_tenant_id(credentials=creds)
+            gen = _resolve_tenant_id(request=None, credentials=creds)
             with pytest.raises(HTTPException) as exc_info:
                 await self._collect(gen)
         assert exc_info.value.status_code == 503
@@ -255,37 +262,37 @@ class TestGetTenantIdDep:
     @pytest.mark.asyncio
     async def test_raises_401_when_token_invalid(self) -> None:
         from fastapi import HTTPException
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         stub = _AuthSettingsStub(multi_tenancy_enabled=True, jwt_secret_key="real-secret")
         creds = self._stub_creds("not-a-valid-jwt")
         with patch("konjoai.auth.deps.get_settings", return_value=stub):
             with patch("konjoai.auth.deps.decode_token", side_effect=ValueError("bad token")):
-                gen = get_tenant_id(credentials=creds)
+                gen = _resolve_tenant_id(request=None, credentials=creds)
                 with pytest.raises(HTTPException) as exc_info:
                     await self._collect(gen)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_yields_tenant_id_and_sets_context_var(self) -> None:
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         stub = _AuthSettingsStub(multi_tenancy_enabled=True, jwt_secret_key="s")
         creds = self._stub_creds("valid.jwt.token")
         fake_claims = TenantClaims(tenant_id="enterprise-a")
         with patch("konjoai.auth.deps.get_settings", return_value=stub):
             with patch("konjoai.auth.deps.decode_token", return_value=fake_claims):
-                gen = get_tenant_id(credentials=creds)
+                gen = _resolve_tenant_id(request=None, credentials=creds)
                 tenant_id = await self._collect(gen)
         assert tenant_id == "enterprise-a"
 
     @pytest.mark.asyncio
     async def test_context_var_cleared_after_generator_exhausted(self) -> None:
-        from konjoai.auth.deps import get_tenant_id
+        from konjoai.auth.deps import _resolve_tenant_id
         stub = _AuthSettingsStub(multi_tenancy_enabled=True, jwt_secret_key="s")
         creds = self._stub_creds("valid.jwt.token")
         fake_claims = TenantClaims(tenant_id="cleanup-test")
         with patch("konjoai.auth.deps.get_settings", return_value=stub):
             with patch("konjoai.auth.deps.decode_token", return_value=fake_claims):
-                gen = get_tenant_id(credentials=creds)
+                gen = _resolve_tenant_id(request=None, credentials=creds)
                 await self._collect(gen)
                 try:
                     await gen.aclose()  # trigger finally block

@@ -43,13 +43,15 @@ async def agent_query(req: AgentQueryRequest) -> AgentQueryResponse:
     timeout_seconds = float(settings.request_timeout_seconds)
 
     try:
-        async with asyncio.timeout(timeout_seconds):
-            with timed(tel, "agent", top_k=req.top_k, max_steps=req.max_steps):
-                result = await asyncio.to_thread(
+        with timed(tel, "agent", top_k=req.top_k, max_steps=req.max_steps):
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
                     RAGAgent(top_k=req.top_k, max_steps=req.max_steps).run,
                     req.question,
-                )
-    except TimeoutError as exc:
+                ),
+                timeout=timeout_seconds,
+            )
+    except asyncio.TimeoutError as exc:
         raise HTTPException(
             status_code=504,
             detail=f"agent request timed out after {timeout_seconds:.2f}s",

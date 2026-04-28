@@ -9,11 +9,11 @@
 
 ---
 
-## Current State: Sprint 17 Complete (v0.9.0)
+## Current State: Sprint 18 Complete (v0.9.5)
 
-- **Tests:** 509 passing (+ 15 skipped), 5 pre-existing Python 3.9 compat failures
+- **Tests:** 607 passing (+ 15 skipped), 5 pre-existing Python 3.9 compat failures
 - **Branch:** `main`
-- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking + CRAG + Self-RAG + Query Decomposition + Agentic RAG + GraphRAG + OTel + Prometheus + **Multi-tenancy + JWT (Sprint 17)**
+- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking + CRAG + Self-RAG + Query Decomposition + Agentic RAG + GraphRAG + OTel + Prometheus + Multi-tenancy + JWT + **Auth hardening + Rate limiting (Sprint 18)**
 
 ---
 
@@ -40,6 +40,36 @@
 3. Endpoint preserves K3/K6 behavior (telemetry optional, no breaking change to `/query`). ✅
 4. Focused unit tests pass for new agent core and route. ✅
 5. Endpoint timeout is enforced and returns deterministic 504 on overrun. ✅
+
+---
+
+## Completed Sprint: Sprint 18 — Auth Hardening + Rate Limiting (v0.9.5)
+
+**Goal:** Harden the auth layer with per-tenant sliding-window rate limiting, an optional static API-key authentication layer (accepted alongside JWT), and IP-based brute-force protection for auth endpoints. All new features are feature-flagged off by default (K3). Zero new mandatory dependencies (K5).
+
+### Implementation Checklist — Sprint 18
+
+| # | File | Change | Status |
+|---|---|---|---|
+| 1 | `konjoai/auth/rate_limiter.py` | `RateLimiter`: per-(tenant, endpoint) sliding-window rate limiter (deque of timestamps, per-bucket locks); `RateLimitExceeded`; `get_rate_limiter()` singleton | ✅ |
+| 2 | `konjoai/auth/api_key.py` | `APIKeyResult`, `hash_api_key()`, `verify_api_key()`: SHA-256 + `hmac.compare_digest` timing-safe check against stored digest registry | ✅ |
+| 3 | `konjoai/auth/brute_force.py` | `BruteForceGuard`: per-IP sliding-window failure tracker + lockout; `IPLockedOut`; `get_brute_force_guard()` singleton | ✅ |
+| 4 | `konjoai/auth/deps.py` | `get_tenant_id` delegates to `_resolve_tenant_id`; evaluates X-API-Key before Bearer JWT; brute-force check/record integrated; `check_rate_limit` new dependency | ✅ |
+| 5 | `konjoai/auth/__init__.py` | Updated exports: `APIKeyResult`, `verify_api_key`, `hash_api_key`, `RateLimiter`, `RateLimitExceeded`, `get_rate_limiter`, `BruteForceGuard`, `IPLockedOut`, `get_brute_force_guard` | ✅ |
+| 6 | `konjoai/config.py` | `api_key_auth_enabled=False`, `api_keys=[]`, `rate_limiting_enabled=False`, `rate_limit_requests=60`, `rate_limit_window_seconds=60`, `brute_force_enabled=False`, `brute_force_max_attempts=5`, `brute_force_window_seconds=60`, `brute_force_lockout_seconds=300` | ✅ |
+| 7 | `tests/unit/test_rate_limiter.py` | 30 tests: construction, sliding-window eviction, tenant/endpoint isolation, disabled mode, current_count, reset, thread safety, singleton | ✅ |
+| 8 | `tests/unit/test_api_key_auth.py` | 32 tests: hash determinism, verify match/no-match/empty, tenant extraction, case-insensitive comparison, dep integration (valid key, invalid, disabled, context var cleanup, API key beats JWT) | ✅ |
+| 9 | `tests/unit/test_brute_force.py` | 29 tests: construction, check_ip, record_failure/success, is_locked, failure_count, reset, disabled mode, thread safety, singleton, dep integration (429, failure increment, success clear) | ✅ |
+| 10 | `tests/unit/test_auth.py` | Updated 6 `TestGetTenantIdDep` tests to call `_resolve_tenant_id` (internal helper that accepts `request=None`) to preserve backward compat with unit tests while `get_tenant_id` requires a real FastAPI `Request` | ✅ |
+
+### Sprint 18 Gate Results
+
+1. Rate limiting: per-(tenant, endpoint) sliding-window, pure Python, no Redis (K5). ✅
+2. API key auth: SHA-256 + `hmac.compare_digest`, timing-safe, optional (K3, K5). ✅
+3. Brute-force protection: per-IP failure count + lockout, in-memory, no external dep (K5). ✅
+4. K3: all three features off by default — existing API unaffected with zero config change. ✅
+5. K6: no breaking changes — all new config fields have sensible defaults. ✅
+6. **607 passed, 15 skipped** (up from 509 — +98 new tests). ✅
 
 ---
 
@@ -223,7 +253,7 @@
 | 15 | v0.8.5 | P3 | Lightweight GraphRAG (NetworkX + Louvain) | ✅ 464 tests |
 | 16 | v0.8.7 | P4 | OTel + Prometheus + Grafana | ✅ 485 tests |
 | 17 | v0.9.0 | P4 | Multi-tenancy + JWT | ✅ 509 tests |
-| 18 | v0.9.5 | P4 | Auth + rate limiting | ⬜ |
+| 18 | v0.9.5 | P4 | Auth + rate limiting | ✅ 607 tests |
 | 19 | v0.9.8 | P5 | Python SDK + MCP server | ⬜ |
 | 20 | v1.0.0 | P5 | Helm chart + PyPI + Docs site | ⬜ |
 

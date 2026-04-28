@@ -120,6 +120,22 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"         # JWT signing algorithm
     tenant_id_claim: str = "sub"         # JWT claim used as tenant_id
 
+    # ── API Key Auth (Sprint 18) ──────────────────────────────────────────────
+    api_key_auth_enabled: bool = False   # off by default; K3 graceful degradation
+    # Each entry: "<sha256hex>" or "<sha256hex>:<tenant_id>"
+    api_keys: list[str] = Field(default_factory=list)
+
+    # ── Rate Limiting (Sprint 18) ─────────────────────────────────────────────
+    rate_limiting_enabled: bool = False  # off by default; K3 graceful degradation
+    rate_limit_requests: int = 60        # max requests per window per (tenant, endpoint)
+    rate_limit_window_seconds: int = 60  # sliding window length in seconds
+
+    # ── Brute-Force Protection (Sprint 18) ───────────────────────────────────
+    brute_force_enabled: bool = False    # off by default; K3 graceful degradation
+    brute_force_max_attempts: int = 5    # failed auth attempts before lockout
+    brute_force_window_seconds: int = 60 # window for counting failures (seconds)
+    brute_force_lockout_seconds: int = 300  # lockout duration (seconds)
+
     # ── Async Pipeline (Sprint 8) ─────────────────────────────────────────────
     async_enabled: bool = True               # on by default for async pipeline
     request_timeout_seconds: float = 30.0   # asyncio.timeout ceiling per request

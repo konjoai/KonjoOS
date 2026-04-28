@@ -194,7 +194,7 @@ async def query(  # noqa: C901
             with timed(tel, "parallel_retrieve", n_sub_queries=len(decomposition_plan.sub_queries)):
                 raw = await ParallelRetriever().retrieve(decomposition_plan.sub_queries, _retrieve_sub_query)
 
-            decomposition_batches = list(zip(decomposition_plan.sub_queries, raw, strict=False))
+            decomposition_batches = list(zip(decomposition_plan.sub_queries, raw))
 
             all_results: list[HybridResult] = []
             for _, batch in decomposition_batches:

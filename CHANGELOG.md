@@ -3,6 +3,43 @@
 All notable changes to KonjoOS are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased] — Sprint 18: Auth Hardening + Rate Limiting (v0.9.5)
+
+### Added
+- `konjoai/auth/rate_limiter.py` — in-memory sliding-window rate limiter:
+  - `_Bucket`: per-(tenant, endpoint) deque of timestamps with per-bucket `threading.Lock`
+  - `RateLimiter`: keyed by `(tenant_id, endpoint)`, configurable `max_requests` / `window_seconds`; `enabled=False` is a complete no-op (K3)
+  - `RateLimitExceeded`: carries `tenant_id`, `endpoint`, `limit`, `window`
+  - `get_rate_limiter()`: module-level singleton reading settings; `_reset_singleton()` for tests
+- `konjoai/auth/api_key.py` — static API-key authentication layer:
+  - `hash_api_key(plaintext)`: SHA-256 hex digest (stdlib only, K5)
+  - `verify_api_key(plaintext, entries)`: timing-safe `hmac.compare_digest` lookup against a `<sha256hex>[:<tenant_id>]` registry
+  - `APIKeyResult`: `tenant_id` + `key_hash` resolved on match
+- `konjoai/auth/brute_force.py` — IP-based brute-force protection:
+  - `_IPRecord`: per-IP sliding-window failure deque + lockout timestamp with `threading.Lock`
+  - `BruteForceGuard`: `check_ip` (raises `IPLockedOut` when locked), `record_failure`, `record_success` (clears failures), `is_locked`, `failure_count`, `reset`
+  - `IPLockedOut`: carries `ip`, `lockout_seconds`, `retry_after`
+  - `get_brute_force_guard()`: module-level singleton; `_reset_singleton()` for tests
+- `konjoai/auth/deps.py`:
+  - `_resolve_tenant_id(request, credentials)`: core resolution logic; accepts `request=None` for unit tests; evaluates X-API-Key header before Bearer JWT; integrates brute-force guard
+  - `get_tenant_id(request, credentials)`: thin FastAPI dep delegating to `_resolve_tenant_id` (non-optional `Request` required by FastAPI DI)
+  - `check_rate_limit(request, tenant_id)`: new FastAPI dep; raises 429 on limit breach; no-op when `rate_limiting_enabled=False`
+  - `get_brute_force_guard` imported at module level for patchability in tests
+- `tests/unit/test_rate_limiter.py` — 30 tests
+- `tests/unit/test_api_key_auth.py` — 32 tests
+- `tests/unit/test_brute_force.py` — 29 tests
+
+### Changed
+- `konjoai/config.py`: added `api_key_auth_enabled=False`, `api_keys=[]`, `rate_limiting_enabled=False`, `rate_limit_requests=60`, `rate_limit_window_seconds=60`, `brute_force_enabled=False`, `brute_force_max_attempts=5`, `brute_force_window_seconds=60`, `brute_force_lockout_seconds=300` (all off by default — K3)
+- `konjoai/auth/__init__.py`: updated exports for all Sprint 18 public symbols
+- `tests/unit/test_auth.py`: updated `TestGetTenantIdDep` to call `_resolve_tenant_id` (internal helper accepting `request=None`) so existing unit tests compile without a full FastAPI `Request`
+
+### Tests
+- Focused run: `python3 -m pytest tests/unit/test_rate_limiter.py tests/unit/test_api_key_auth.py tests/unit/test_brute_force.py -v` → **91 passed in 0.65s**
+- Full regression: `python3 -m pytest tests/ --timeout=120` → **607 passed, 15 skipped** (5 pre-existing Python 3.9 compat failures unchanged)
+
+---
+
 ## [Unreleased] — Sprint 17: Multi-tenancy + JWT (v0.9.0)
 
 ### Added
