@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kyro.fullname" . }}-config
+  labels:
+    {{- include "kyro.labels" . | nindent 4 }}
+data:
+  QDRANT_URL: {{ .Values.config.qdrantUrl | quote }}
+  EMBED_MODEL: {{ .Values.config.embedModel | quote }}
+  EMBED_DEVICE: {{ .Values.config.embedDevice | quote }}
+  CHUNK_STRATEGY: {{ .Values.config.chunkStrategy | quote }}
+  GENERATOR_BACKEND: {{ .Values.config.generatorBackend | quote }}
+  ENABLE_TELEMETRY: {{ .Values.config.enableTelemetry | quote }}
+  MULTI_TENANCY_ENABLED: {{ .Values.config.multiTenancyEnabled | quote }}
+  OTEL_ENABLED: {{ .Values.config.otelEnabled | quote }}
+  RATE_LIMITING_ENABLED: {{ .Values.config.rateLimitingEnabled | quote }}
+  STREAMING_ENABLED: {{ .Values.config.streamingEnabled | quote }}
+  REQUEST_TIMEOUT_SECONDS: {{ .Values.config.requestTimeoutSeconds | quote }}

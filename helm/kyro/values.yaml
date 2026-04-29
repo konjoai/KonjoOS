@@ -1,0 +1,121 @@
+# Default values for kyro.
+# Override per environment with: helm install kyro ./helm/kyro -f values-prod.yaml
+
+replicaCount: 2
+
+image:
+  repository: konjoai/kyro
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8001"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kyro.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: "2"
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Application configuration — all values become env vars in the ConfigMap
+config:
+  qdrantUrl: "http://qdrant:6333"
+  embedModel: "sentence-transformers/all-MiniLM-L6-v2"
+  embedDevice: "cpu"
+  chunkStrategy: "recursive"
+  generatorBackend: "openai"
+  enableTelemetry: "true"
+  multiTenancyEnabled: "false"
+  otelEnabled: "false"
+  rateLimitingEnabled: "false"
+  streamingEnabled: "true"
+  requestTimeoutSeconds: "30.0"
+
+# Secrets — override with sealed-secrets or external-secrets in production
+secrets:
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  qdrantApiKey: ""
+  jwtSecretKey: ""
+
+# Qdrant sub-chart dependency (optional — set to false to use an external Qdrant)
+qdrant:
+  enabled: true
+  image:
+    repository: qdrant/qdrant
+    tag: "v1.7.4"
+  service:
+    type: ClusterIP
+    port: 6333
+  persistence:
+    enabled: true
+    size: 10Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3

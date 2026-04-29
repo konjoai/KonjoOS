@@ -9,11 +9,11 @@
 
 ---
 
-## Current State: Sprint 19 Complete (v0.9.8)
+## Current State: Sprint 20 Complete — v1.0.0 SHIPPED
 
-- **Tests:** 687 passing (+ 15 skipped), 5 pre-existing Python 3.9 compat failures
+- **Tests:** 764 passing (+ 15 skipped), 5 pre-existing Python 3.9 compat failures
 - **Branch:** `main`
-- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking + CRAG + Self-RAG + Query Decomposition + Agentic RAG + GraphRAG + OTel + Prometheus + Multi-tenancy + JWT + Auth hardening + Rate limiting + **Python SDK + MCP server (Sprint 19)**
+- **Stack:** FastAPI + HyDE + ColBERT + hybrid search + RAGAS + Vectro bridge + streaming + semantic cache + adaptive chunking + CRAG + Self-RAG + Query Decomposition + Agentic RAG + GraphRAG + OTel + Prometheus + Multi-tenancy + JWT + Auth hardening + Rate limiting + Python SDK + MCP server + **Helm chart + PyPI + Docs site (Sprint 20 — v1.0.0)**
 
 ---
 
@@ -40,6 +40,47 @@
 3. Endpoint preserves K3/K6 behavior (telemetry optional, no breaking change to `/query`). ✅
 4. Focused unit tests pass for new agent core and route. ✅
 5. Endpoint timeout is enforced and returns deterministic 504 on overrun. ✅
+
+---
+
+## Completed Sprint: Sprint 20 — Helm chart + PyPI packaging + Docs site (v1.0.0)
+
+**Goal:** Ship Kyro as a fully installable, deployable, and documented v1.0.0 release. Produce a production Helm chart, complete `pyproject.toml` packaging with optional extras, a GitHub Actions release workflow (PyPI + Docker Hub + Helm OCI), and an MkDocs documentation site.
+
+### Implementation Checklist — Sprint 20
+
+| # | File | Change | Status |
+|---|---|---|---|
+| 1 | `pyproject.toml` | Bump to v1.0.0; add `classifiers`, `[project.optional-dependencies]` (jwt, mcp, eval, observability, dev, all), `[project.urls]`, `authors.email`, `[tool.hatch.build]` | ✅ |
+| 2 | `konjoai/__init__.py` | `__version__ = "1.0.0"` | ✅ |
+| 3 | `helm/kyro/Chart.yaml` | `apiVersion: v2`, `name: kyro`, `version/appVersion: 1.0.0`, `type: application` | ✅ |
+| 4 | `helm/kyro/values.yaml` | `replicaCount=2`, `autoscaling.enabled=true`, `config.*` env-var map, `secrets.*`, `livenessProbe/readinessProbe`, `resources`, `ingress` | ✅ |
+| 5 | `helm/kyro/templates/_helpers.tpl` | `kyro.name`, `kyro.fullname`, `kyro.chart`, `kyro.labels`, `kyro.selectorLabels`, `kyro.serviceAccountName` | ✅ |
+| 6 | `helm/kyro/templates/deployment.yaml` | `apps/v1` Deployment; `envFrom: configMapRef`, secret env injections, liveness/readiness probes, security context | ✅ |
+| 7 | `helm/kyro/templates/service.yaml` | `v1` ClusterIP Service, port 8000 | ✅ |
+| 8 | `helm/kyro/templates/configmap.yaml` | `v1` ConfigMap — all `config.*` values as env vars | ✅ |
+| 9 | `helm/kyro/templates/hpa.yaml` | `autoscaling/v2` HPA — CPU + memory targets, conditional on `autoscaling.enabled` | ✅ |
+| 10 | `helm/kyro/templates/ingress.yaml` | `networking.k8s.io/v1` Ingress — conditional on `ingress.enabled` | ✅ |
+| 11 | `.github/workflows/release.yml` | Tag-triggered: test → build → PyPI (OIDC trusted publishing) + Docker (multi-arch amd64/arm64) + Helm OCI + GitHub Release | ✅ |
+| 12 | `mkdocs.yml` | Material theme, nav: index/quickstart/sdk/mcp/api/configuration/deployment | ✅ |
+| 13 | `docs/index.md` | Feature table, version badge | ✅ |
+| 14 | `docs/quickstart.md` | Install, Docker Compose, first query, optional features table | ✅ |
+| 15 | `docs/sdk.md` | Full KonjoClient API, auth, error handling, response models | ✅ |
+| 16 | `docs/mcp.md` | Claude Desktop integration, tool reference, programmatic use | ✅ |
+| 17 | `docs/api.md` | All endpoint request/response contracts | ✅ |
+| 18 | `docs/configuration.md` | All 40+ env vars with defaults and descriptions | ✅ |
+| 19 | `docs/deployment.md` | Docker Compose, Helm install/upgrade, production checklist | ✅ |
+| 20 | `tests/unit/test_packaging.py` | 52 tests: version, classifiers, extras, URLs, entry points, imports, mkdocs, docs pages | ✅ |
+| 21 | `tests/unit/test_helm.py` | 25 tests: directory structure, Chart.yaml, values.yaml, workflow trigger/jobs | ✅ |
+
+### Sprint 20 Gate Results
+
+1. `konjoai.__version__ == "1.0.0"` and matches `pyproject.toml`. ✅
+2. Six optional extras: jwt, mcp, eval, observability, dev, all. ✅
+3. Helm chart: 10 files, passes YAML structural validation. ✅
+4. Release workflow: tag trigger, 5 jobs (test, build, pypi, docker, helm, github-release). ✅
+5. Docs site: 7 pages, MkDocs Material config. ✅
+6. **764 passed, 15 skipped** (up from 687 — +77 new tests). ✅
 
 ---
 
@@ -289,7 +330,7 @@
 | 17 | v0.9.0 | P4 | Multi-tenancy + JWT | ✅ 509 tests |
 | 18 | v0.9.5 | P4 | Auth + rate limiting | ✅ 607 tests |
 | 19 | v0.9.8 | P5 | Python SDK + MCP server | ✅ 687 tests |
-| 20 | v1.0.0 | P5 | Helm chart + PyPI + Docs site | ⬜ |
+| 20 | v1.0.0 | P5 | Helm chart + PyPI + Docs site | ✅ 764 tests |
 
 ---
 

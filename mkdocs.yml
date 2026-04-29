@@ -1,0 +1,63 @@
+site_name: Kyro
+site_description: Production RAG pipeline with hybrid retrieval, reranking, multi-tenancy, and agentic capabilities.
+site_url: https://konjoai.github.io/kyro
+repo_url: https://github.com/konjoai/kyro
+repo_name: konjoai/kyro
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Python SDK: sdk.md
+  - MCP Server: mcp.md
+  - API Reference: api.md
+  - Configuration: configuration.md
+  - Deployment: deployment.md
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/konjoai/kyro
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/konjoai

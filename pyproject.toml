@@ -4,18 +4,77 @@ build-backend = "hatchling.build"
 
 [project]
 name = "konjoai"
-version = "0.6.0"
+version = "1.0.0"
 description = "Production RAG pipeline: hybrid retrieval, reranking, and RAGAS evaluation"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Wesley Scholl"},
+    {name = "Wesley Scholl", email = "wesleyscholl@gmail.com"},
 ]
-keywords = ["rag", "llm", "retrieval", "embeddings", "fastapi", "qdrant"]
+keywords = ["rag", "llm", "retrieval", "embeddings", "fastapi", "qdrant", "mcp", "multitenancy"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pypdf>=3.17.0",
+    "beautifulsoup4>=4.12.0",
+    "sentence-transformers>=2.3.0",
+    "torch>=2.1.0",
+    "qdrant-client>=1.7.0",
+    "rank-bm25>=0.2.2",
+    "networkx>=3.2",
+    "openai>=1.6.0",
+    "anthropic>=0.20.0",
+    "httpx>=0.25.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+jwt = ["PyJWT>=2.8"]
+mcp = ["mcp>=1.0"]
+eval = ["ragas>=0.1.0", "datasets>=2.15.0"]
+observability = [
+    "prometheus-client>=0.19",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-timeout>=2.2.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.1.0",
+]
+all = [
+    "konjoai[jwt,mcp,eval,observability]",
+]
+
+[project.urls]
+Homepage = "https://github.com/konjoai/kyro"
+Repository = "https://github.com/konjoai/kyro"
+Documentation = "https://konjoai.github.io/kyro"
+"Bug Tracker" = "https://github.com/konjoai/kyro/issues"
+Changelog = "https://github.com/konjoai/kyro/blob/main/CHANGELOG.md"
 
 [project.scripts]
 konjoai = "konjoai.cli.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["konjoai"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

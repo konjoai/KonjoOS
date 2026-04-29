@@ -3,6 +3,30 @@
 All notable changes to KonjoOS are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v1.0.0] — Sprint 20: Helm chart + PyPI packaging + Docs site
+
+### Added
+- `pyproject.toml` v1.0.0: production classifiers (Development Status :: 5 - Production/Stable, Python 3.11/3.12, Typing :: Typed), six optional extras (`jwt`, `mcp`, `eval`, `observability`, `dev`, `all`), `[project.urls]` (Homepage, Documentation, Repository, Changelog, Bug Tracker), author email, `[tool.hatch.build.targets.wheel]`
+- `konjoai/__init__.py`: `__version__ = "1.0.0"`
+- `helm/kyro/` — production Helm chart:
+  - `Chart.yaml` — `apiVersion: v2`, application type, semver 1.0.0
+  - `values.yaml` — `replicaCount=2`, HPA enabled (2–10 pods), ClusterIP service port 8000, full `config.*` env-var map, `secrets.*`, liveness/readiness probes on `/health`, CPU/memory resource limits, pod security context (non-root)
+  - `templates/_helpers.tpl` — standard name/label/selector helpers
+  - `templates/deployment.yaml` — `apps/v1` Deployment; ConfigMap `envFrom`, secret env injections, security context, checksum annotation for config rolling restarts
+  - `templates/service.yaml` — `v1` ClusterIP Service
+  - `templates/configmap.yaml` — `v1` ConfigMap, all config keys
+  - `templates/hpa.yaml` — `autoscaling/v2` HPA with CPU + memory targets
+  - `templates/ingress.yaml` — `networking.k8s.io/v1` Ingress (conditional)
+- `.github/workflows/release.yml` — tag-triggered release pipeline: test (3.11 + 3.12) → build sdist/wheel → PyPI (OIDC trusted publishing) + Docker Hub (multi-arch amd64/arm64, `latest` + versioned tag) + Helm OCI push + GitHub Release with artefacts
+- `mkdocs.yml` — MkDocs Material theme, versioned docs, social links
+- `docs/` — 7-page documentation site: `index.md`, `quickstart.md`, `sdk.md`, `mcp.md`, `api.md`, `configuration.md`, `deployment.md`
+- `tests/unit/test_packaging.py` — 52 tests
+- `tests/unit/test_helm.py` — 25 tests
+
+### Tests
+- Focused run: `python3 -m pytest tests/unit/test_packaging.py tests/unit/test_helm.py -v` → **77 passed in 0.75s**
+- Full regression: `python3 -m pytest tests/ --timeout=120` → **764 passed, 15 skipped** (5 pre-existing Python 3.9 compat failures unchanged)
+
 ## [v0.9.8] — Sprint 19: Python SDK + MCP Server
 
 ### Added
