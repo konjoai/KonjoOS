@@ -21,10 +21,11 @@ No vendor lock-in — plug in OpenAI, Anthropic, or a local [Squish](https://git
 | Audit logging | Immutable event trail with OWASP-compliant hashing, in-memory and JSONL backends |
 | Python SDK | Typed `KonjoClient` for programmatic access |
 | MCP server | Expose Kyro tools to any MCP-compatible AI agent |
+| AutoRouter | Sprint 25 CRAG-classification → retrieval strategy mapping |
 
 ## Version
 
-Current version: **1.4.0** — 853 tests passing.
+Current version: **1.5.0** — 853 tests passing.
 
 ## License
 
