@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class RouteStrategy(str, Enum):
@@ -17,7 +16,7 @@ class RouteDecision:
     strategy: RouteStrategy
     rationale: str
     crag_classification: str
-    crag_score: Optional[float]
+    crag_score: float | None
 
 
 class AutoRouter:
@@ -32,7 +31,7 @@ class AutoRouter:
     def decide(
         self,
         crag_classification: str,
-        crag_score: Optional[float] = None,
+        crag_score: float | None = None,
     ) -> RouteDecision:
         classification = crag_classification.strip().lower()
 
