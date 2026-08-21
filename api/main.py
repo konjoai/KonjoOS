@@ -10,6 +10,7 @@ Endpoints:
     GET    /retrieval/{id}    fetch a cached retrieval result by ID
     GET    /metrics           live performance stats
     POST   /ingest            index a batch of {text, metadata} documents
+    DELETE /ingest            wipe the Qdrant collection /ingest writes to
     GET    /health            liveness check
 
 Singleflight: identical (tenant_id, question) requests collide on a single
@@ -55,6 +56,10 @@ class IngestRequest(BaseModel):
 class IngestResult(BaseModel):
     indexed: int
     sources: int
+
+
+class ResetResult(BaseModel):
+    points_removed: int
 
 
 class QueryRequestBody(BaseModel):
@@ -105,6 +110,7 @@ class Pipeline(Protocol):
     async def embed_query(self, question: str) -> np.ndarray: ...
     async def retrieve(self, question: str, q_vec: np.ndarray, top_k: int) -> list[ScoredSource]: ...
     async def index(self, request: IngestRequest) -> IngestResult: ...
+    async def reset(self) -> int: ...
     def document_count(self) -> int: ...
 
 
@@ -173,6 +179,12 @@ class KyroPipeline:
         await asyncio.to_thread(bm25.build, contents, sources, metadatas)
 
         return IngestResult(indexed=len(contents), sources=len(sources_seen))
+
+    async def reset(self) -> int:
+        from konjoai.store.qdrant import get_store
+
+        store = get_store()
+        return await asyncio.to_thread(store.reset)
 
     def document_count(self) -> int:
         try:
@@ -408,6 +420,22 @@ def create_app(pipeline: Pipeline | None = None) -> FastAPI:
                 _current_tenant_id.reset(tenant_token)
             except (LookupError, ValueError):
                 pass
+
+    # ── Reset ────────────────────────────────────────────────────────────────
+
+    @app.delete("/ingest", response_model=ResetResult, tags=["ingest"])
+    async def reset_index(p: Pipeline = Depends(get_pipeline)) -> ResetResult:
+        """Wipe the Qdrant collection `/ingest` writes to.
+
+        Scoped to the vector collection only — the BM25 index, semantic
+        cache, and retrieval-by-id store are untouched. Qdrant point ids are
+        random UUIDs (see `QdrantStore.upsert`), so nothing deduplicates
+        across repeated `/ingest` calls; a caller re-ingesting the same
+        corpus (e.g. an eval harness before an authoritative run) should
+        call this first to avoid an accumulating index.
+        """
+        removed = await p.reset()
+        return ResetResult(points_removed=removed)
 
     # ── Metrics ──────────────────────────────────────────────────────────────
 
