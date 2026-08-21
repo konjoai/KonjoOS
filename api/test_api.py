@@ -35,6 +35,8 @@ class _StubPipeline:
     embed_calls: int = 0
     retrieve_calls: int = 0
     index_calls: int = 0
+    reset_calls: int = 0
+    reset_points_removed: int = 0
     retrieve_delay_s: float = 0.0
     embed_dim: int = 16
 
@@ -67,6 +69,10 @@ class _StubPipeline:
             indexed=len(request.documents),
             sources=len({d.metadata.get("source") or "default" for d in request.documents}),
         )
+
+    async def reset(self) -> int:
+        self.reset_calls += 1
+        return self.reset_points_removed
 
     def document_count(self) -> int:
         return self.document_count_value
@@ -196,6 +202,16 @@ async def test_ingest_rejects_empty_payload():
     async with _client(_StubPipeline()) as c:
         r = await c.post("/ingest", json={"documents": []})
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reset_invokes_pipeline_reset_and_reports_points_removed():
+    pipeline = _StubPipeline(reset_points_removed=362)
+    async with _client(pipeline) as c:
+        r = await c.delete("/ingest")
+    assert r.status_code == 200
+    assert r.json() == {"points_removed": 362}
+    assert pipeline.reset_calls == 1
 
 
 # ── /metrics ───────────────────────────────────────────────────────────────

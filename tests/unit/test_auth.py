@@ -425,3 +425,24 @@ class TestQdrantStoreTenantScoping:
 
         call_kwargs = mock_client.query_points.call_args.kwargs
         assert call_kwargs.get("query_filter") is None
+
+    def test_reset_deletes_and_recreates_the_collection(self) -> None:
+        """reset() deletes+recreates the collection and returns the prior count."""
+        from konjoai.store.qdrant import QdrantStore
+
+        mock_client = MagicMock()
+        mock_client.count.return_value.count = 362
+
+        store = QdrantStore.__new__(QdrantStore)
+        store._client = mock_client
+        store._collection = "test_col"
+        store._dim = 4
+
+        removed = store.reset()
+
+        assert removed == 362
+        mock_client.delete_collection.assert_called_once_with(collection_name="test_col")
+        mock_client.create_collection.assert_called_once()
+        create_kwargs = mock_client.create_collection.call_args.kwargs
+        assert create_kwargs["collection_name"] == "test_col"
+        assert create_kwargs["vectors_config"].size == 4

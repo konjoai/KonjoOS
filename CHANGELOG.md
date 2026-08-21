@@ -3,6 +3,23 @@
 All notable changes to KonjoOS are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [unreleased] — Qdrant reset endpoint
+
+### Added
+- `DELETE /ingest` (`api/main.py`) — wipes the Qdrant collection `/ingest`
+  writes to and returns `{points_removed}`. Scoped narrowly: the BM25 index,
+  semantic cache, and retrieval-by-id store are untouched.
+- `QdrantStore.reset()` (`konjoai/store/qdrant.py`) — deletes and recreates
+  the collection, returning the point count it removed.
+- Motivation: `/ingest` upserts under random UUID point ids, so nothing
+  deduplicates across repeated calls — a caller re-ingesting the same corpus
+  (e.g. an external eval harness) needs a way to start from a clean,
+  single-ingest index instead of accumulating points across runs.
+
+### Tests
+- `api/test_api.py::test_reset_invokes_pipeline_reset_and_reports_points_removed`
+- `tests/unit/test_auth.py::TestQdrantStoreTenantScoping::test_reset_deletes_and_recreates_the_collection`
+
 ## [v1.7.0] — Sprint 27: Cache Warming + TTL Expiry + Query Clustering
 
 ### Added

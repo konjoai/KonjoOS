@@ -156,6 +156,26 @@ class QdrantStore:
         """Return the number of points in the collection."""
         return self._client.count(collection_name=self._collection).count
 
+    def reset(self) -> int:
+        """Delete every point in the collection and recreate it empty.
+
+        Point ids are random UUIDs (see :meth:`upsert`), so nothing
+        deduplicates across repeated ingests — this is what gives a caller
+        (e.g. an eval harness re-ingesting the same corpus) a clean,
+        single-ingest collection instead of an accumulating one. Returns the
+        number of points removed.
+        """
+        from qdrant_client.models import Distance, VectorParams
+
+        removed = self.count()
+        self._client.delete_collection(collection_name=self._collection)
+        self._client.create_collection(
+            collection_name=self._collection,
+            vectors_config=VectorParams(size=self._dim, distance=Distance.COSINE),
+        )
+        logger.info("QdrantStore: reset collection '%s' (%d points removed)", self._collection, removed)
+        return removed
+
     def scroll_all(self, batch_size: int = 256) -> tuple[np.ndarray, list[str], list[str], list[str]]:
         """Scroll through every point in the collection.
 
